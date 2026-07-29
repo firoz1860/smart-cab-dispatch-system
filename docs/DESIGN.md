@@ -99,35 +99,38 @@ This deliberately applies to trips already in progress (per the assignment's
 explicit requirement), not just to not-yet-started assignments, because it
 operates on live position rather than a frozen route plan.
 
-## 6. Why Hungarian everywhere, not greedy-for-scale
+## 6. Nearest-driver assignment (greedy, not global-optimum)
 
-The assignment suggests an optimal solver (Hungarian/OR-Tools) for scheduled
-batch rounds and a lighter greedy match for one-off requests between batches.
-We use the Hungarian algorithm (`backend/src/engine/hungarian.ts`, O(n³) on
-the padded square matrix) uniformly for both, including single-trip
-on-demand approvals — at this problem's stated scale (10-100 drivers, a few
-hundred guests), a few-hundred-row solve runs in low milliseconds, well
-inside the "seconds, not minutes" budget, and it strictly dominates greedy on
-solution quality (a greedy nearest-driver pick can starve a later trip that
-Hungarian would have placed by reshuffling one earlier assignment).
-Rectangular trip/driver counts are handled by zero-padding to a square matrix;
-capacity-infeasible pairs are costed at a large sentinel (`INFEASIBLE`) so the
-solver always prefers leaving a trip in an unmatched (dummy-column) state over
-violating a seat/luggage constraint — this was verified directly (see
-`backend/src/lib/testMatching.ts`): with 15 seeded drivers across 3 vehicle
+`runBatchAssignment` (`backend/src/engine/matchingEngine.ts`) assigns every
+currently `QUEUED` trip to whichever currently `AVAILABLE` driver has the
+shortest ETA to the pickup point — literally "nearest driver wins" — using
+the distance provider's road-aware ETA (Google Distance Matrix, or the
+Haversine + traffic-simulation fallback, see §7) as the distance metric.
+
+An earlier version of this engine used the Hungarian algorithm
+(`backend/src/engine/hungarian.ts`) to find the *global* minimum-total-ETA
+assignment across all queued trips and available drivers at once, which can
+occasionally out-perform pure nearest-driver picking (a greedy pick can
+starve a later trip that a global solve would have placed by reshuffling one
+earlier assignment). That solver is still in the codebase and unit-tested
+(`backend/src/lib/testMatching.ts`) as a general-purpose utility, but the
+engine no longer calls it: the current requirement is that the nearest
+available driver receives the ride, full stop, which is simpler to reason
+about and predict than a fleet-wide optimization that can occasionally assign
+a guest to a farther driver for the greater good of the whole batch.
+
+Trips are still processed most-urgent-first (longest-waiting / soonest
+deadline, via the same priority score as before) so a driver isn't claimed by
+a nearby-but-low-priority trip before a longer-waiting guest gets a turn —
+but once it's a given trip's turn, the choice of driver is purely "closest
+feasible one wins," with no urgency-based cost blending.
+
+Capacity-infeasible drivers (not enough seats/luggage) are skipped entirely
+rather than ever being assigned — verified directly in
+`backend/src/lib/testMatching.ts`: with 15 seeded drivers across 3 vehicle
 classes, clustered trips requiring 6-8 seats correctly stayed `QUEUED` when
 every van was already assigned elsewhere, rather than being incorrectly
 squeezed into an idle 4-seat sedan.
-
-If driver/guest counts grew by an order of magnitude, the noted trade-off
-would be to fall back to greedy-nearest-driver for the always-on real-time
-path and reserve Hungarian for a periodic (e.g. every few minutes) full
-batch re-solve — the codebase's `runBatchAssignment` is already the natural
-seam for that split.
-
-The cost function itself blends live ETA (seconds) with the priority score
-(urgency-weighted), so a driver isn't picked purely on proximity when a
-farther driver would better serve a more time-critical guest.
 
 ## 7. Distance/ETA provider
 

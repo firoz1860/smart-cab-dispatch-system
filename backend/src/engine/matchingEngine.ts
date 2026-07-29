@@ -1,6 +1,5 @@
 import { prisma } from "../lib/prisma";
 import { getDistanceProvider } from "../lib/distanceProvider";
-import { solveHungarian, INFEASIBLE } from "./hungarian";
 import { clusterQueuedTrips } from "./clustering";
 import { splitOversizedTrips } from "./splitting";
 import { computePriorityScore } from "./priority";
@@ -81,13 +80,17 @@ async function assignDriverToTrip(trip: Trip, driver: Driver, now: Date) {
 }
 
 /**
- * Optimal batch assignment via the Hungarian algorithm over every currently
- * QUEUED trip (post clustering/splitting) and every currently AVAILABLE
- * driver. At this problem's scale (10-100 drivers, a few hundred guests) a
- * full O(n^3) optimal solve runs well within the "seconds, not minutes"
- * budget, so we use it uniformly for both the pre-day batch round and
- * one-off requests rather than special-casing a separate greedy path for the
- * latter (see docs/DESIGN.md for the trade-off discussion).
+ * Nearest-driver batch assignment over every currently QUEUED trip (post
+ * clustering/splitting) and every currently AVAILABLE driver: each trip is
+ * assigned to whichever feasible (capacity-permitting) driver has the
+ * shortest ETA to the pickup point, using the distance provider's road-aware
+ * ETA (Google Distance Matrix, or the Haversine + traffic-simulation
+ * fallback) as the "shortest path" cost.
+ *
+ * Trips are processed most-urgent-first (by wait time / deadline) so a
+ * driver isn't claimed by a nearer-but-lower-priority trip before a
+ * longer-waiting guest gets a turn; within that order, the nearest available
+ * driver always wins.
  */
 export async function runBatchAssignment(now: Date = new Date()): Promise<{
   assigned: number;
@@ -104,42 +107,41 @@ export async function runBatchAssignment(now: Date = new Date()): Promise<{
     return { assigned: 0, stillQueued: trips.length };
   }
 
-  // Process in priority order isn't required for Hungarian's optimality
-  // (it globally minimizes total cost), but we still bias the cost function
-  // with each trip's priority score so urgent/long-waiting trips outrank a
-  // marginally shorter ETA for a fresher request.
+  const orderedTrips = [...trips].sort((a, b) => priorityFor(b, now) - priorityFor(a, now));
+
   const etaMatrix = await provider.getEtaMatrix(
     drivers.map((d) => ({ lat: d.currentLat, lng: d.currentLng })),
-    trips.map((t) => ({ lat: t.pickupLat, lng: t.pickupLng })),
+    orderedTrips.map((t) => ({ lat: t.pickupLat, lng: t.pickupLng })),
     now
   );
 
-  const costMatrix: number[][] = trips.map((trip, i) =>
-    drivers.map((driver, j) => {
-      const capacityOk =
-        trip.totalSeats <= driver.seatCapacity && trip.totalLuggage <= driver.luggageCapacity;
-      if (!capacityOk) return INFEASIBLE;
-      const eta = etaMatrix[j][i];
-      const urgency = priorityFor(trip, now);
-      // Urgency reduces effective cost (higher urgency -> more likely to win
-      // the assignment for a given driver) without ever letting an
-      // infeasible (capacity-violating) pairing become viable.
-      return Math.max(0, eta.durationSeconds - urgency * 0.5);
-    })
-  );
-
-  const assignment = solveHungarian(costMatrix);
-
+  const availableDriverIdx = new Set(drivers.map((_, i) => i));
   let assigned = 0;
-  for (let i = 0; i < trips.length; i++) {
-    const driverIdx = assignment[i];
-    if (driverIdx === -1) continue;
-    if (costMatrix[i][driverIdx] >= INFEASIBLE) continue;
-    await assignDriverToTrip(trips[i], drivers[driverIdx], now);
+
+  for (let tripIdx = 0; tripIdx < orderedTrips.length; tripIdx++) {
+    const trip = orderedTrips[tripIdx];
+    let nearestDriverIdx = -1;
+    let nearestEtaSeconds = Infinity;
+
+    for (const driverIdx of availableDriverIdx) {
+      const driver = drivers[driverIdx];
+      const capacityOk = trip.totalSeats <= driver.seatCapacity && trip.totalLuggage <= driver.luggageCapacity;
+      if (!capacityOk) continue;
+      const eta = etaMatrix[driverIdx][tripIdx].durationSeconds;
+      if (eta < nearestEtaSeconds) {
+        nearestEtaSeconds = eta;
+        nearestDriverIdx = driverIdx;
+      }
+    }
+
+    if (nearestDriverIdx === -1) continue;
+
+    await assignDriverToTrip(trip, drivers[nearestDriverIdx], now);
+    availableDriverIdx.delete(nearestDriverIdx);
     assigned += 1;
   }
 
-  return { assigned, stillQueued: trips.length - assigned };
+  return { assigned, stillQueued: orderedTrips.length - assigned };
 }
 
 /**

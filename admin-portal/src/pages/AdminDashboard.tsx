@@ -179,6 +179,8 @@ function SummaryTable({ drivers, trips }: { drivers: Driver[]; trips: Trip[] }) 
   );
 }
 
+const DRIVERS_PAGE_SIZE = 10;
+
 function DriversPanel({
   drivers,
   defaultLat,
@@ -208,6 +210,7 @@ function DriversPanel({
   const [editError, setEditError] = useState<string | null>(null);
   const [rowBusyId, setRowBusyId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -263,6 +266,27 @@ function DriversPanel({
     }
   }
 
+  function updateQuery(value: string) {
+    setQuery(value);
+    setPage(1);
+  }
+
+  const q = query.trim().toLowerCase();
+  const filteredDrivers = q
+    ? drivers.filter(
+        (d) =>
+          d.name.toLowerCase().includes(q) ||
+          d.phone.toLowerCase().includes(q) ||
+          d.vehicleNumber.toLowerCase().includes(q)
+      )
+    : drivers;
+  const totalPages = Math.max(1, Math.ceil(filteredDrivers.length / DRIVERS_PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageDrivers = filteredDrivers.slice(
+    (currentPage - 1) * DRIVERS_PAGE_SIZE,
+    currentPage * DRIVERS_PAGE_SIZE
+  );
+
   return (
     <div className="grid-2">
       <div className="card">
@@ -281,67 +305,79 @@ function DriversPanel({
         </form>
       </div>
       <div className="card">
-        <h3>All drivers</h3>
+        <h3>All drivers ({filteredDrivers.length}{q ? ` of ${drivers.length}` : ""})</h3>
         <input
           className="search-input"
           placeholder="Search by name, phone, or vehicle number..."
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => updateQuery(e.target.value)}
         />
-        <div className="table-scroll">
-        <table className="data-table">
-          <thead><tr><th>Name</th><th>Vehicle</th><th>Cap.</th><th>Status</th><th></th></tr></thead>
-          <tbody>
-            {drivers
-              .filter((d) => {
-                const q = query.trim().toLowerCase();
-                if (!q) return true;
-                return (
-                  d.name.toLowerCase().includes(q) ||
-                  d.phone.toLowerCase().includes(q) ||
-                  d.vehicleNumber.toLowerCase().includes(q)
-                );
-              })
-              .map((d) => (
-              <Fragment key={d.id}>
-                <tr>
-                  <td>{d.name}<div className="muted">{d.phone}</div></td>
-                  <td>{d.vehicleNumber}</td>
-                  <td>{d.seatCapacity}s / {d.luggageCapacity}l</td>
-                  <td><StatusBadge status={d.status} /></td>
-                  <td>
-                    {editingId === d.id ? (
-                      <button className="secondary" onClick={() => setEditingId(null)}>Cancel</button>
-                    ) : (
-                      <div className="button-row">
-                        <button onClick={() => startEdit(d)}>Edit</button>
-                        <button className="danger" disabled={rowBusyId === d.id} onClick={() => deleteDriver(d)}>
-                          Delete
-                        </button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-                {editingId === d.id && (
+        {filteredDrivers.length > 0 && (
+          <div className="table-scroll">
+          <table className="data-table">
+            <thead><tr><th>Name</th><th>Vehicle</th><th>Cap.</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+              {pageDrivers.map((d) => (
+                <Fragment key={d.id}>
                   <tr>
-                    <td colSpan={5}>
-                      <div className="stacked-form">
-                        <label>Name<input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} /></label>
-                        <label>Phone<input value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} /></label>
-                        <label>Vehicle number<input value={editForm.vehicleNumber} onChange={(e) => setEditForm({ ...editForm, vehicleNumber: e.target.value })} /></label>
-                        <label>Seat capacity<input type="number" value={editForm.seatCapacity} onChange={(e) => setEditForm({ ...editForm, seatCapacity: Number(e.target.value) })} /></label>
-                        <label>Luggage capacity<input type="number" value={editForm.luggageCapacity} onChange={(e) => setEditForm({ ...editForm, luggageCapacity: Number(e.target.value) })} /></label>
-                        {editError && <div className="error-banner">{editError}</div>}
-                        <button onClick={() => saveEdit(d.id)} disabled={rowBusyId === d.id}>Save changes</button>
-                      </div>
+                    <td>{d.name}<div className="muted">{d.phone}</div></td>
+                    <td>{d.vehicleNumber}</td>
+                    <td>{d.seatCapacity}s / {d.luggageCapacity}l</td>
+                    <td><StatusBadge status={d.status} /></td>
+                    <td>
+                      {editingId === d.id ? (
+                        <button className="secondary" onClick={() => setEditingId(null)}>Cancel</button>
+                      ) : (
+                        <div className="button-row">
+                          <button onClick={() => startEdit(d)}>Edit</button>
+                          <button className="danger" disabled={rowBusyId === d.id} onClick={() => deleteDriver(d)}>
+                            Delete
+                          </button>
+                        </div>
+                      )}
                     </td>
                   </tr>
-                )}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
-        </div>
+                  {editingId === d.id && (
+                    <tr>
+                      <td colSpan={5}>
+                        <div className="stacked-form">
+                          <label>Name<input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} /></label>
+                          <label>Phone<input value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} /></label>
+                          <label>Vehicle number<input value={editForm.vehicleNumber} onChange={(e) => setEditForm({ ...editForm, vehicleNumber: e.target.value })} /></label>
+                          <label>Seat capacity<input type="number" value={editForm.seatCapacity} onChange={(e) => setEditForm({ ...editForm, seatCapacity: Number(e.target.value) })} /></label>
+                          <label>Luggage capacity<input type="number" value={editForm.luggageCapacity} onChange={(e) => setEditForm({ ...editForm, luggageCapacity: Number(e.target.value) })} /></label>
+                          {editError && <div className="error-banner">{editError}</div>}
+                          <button onClick={() => saveEdit(d.id)} disabled={rowBusyId === d.id}>Save changes</button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+          </div>
+        )}
+        {filteredDrivers.length === 0 && <p className="muted">No drivers match "{query}".</p>}
+        {filteredDrivers.length > DRIVERS_PAGE_SIZE && (
+          <div className="pagination">
+            <button
+              className="secondary"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+            >
+              Prev
+            </button>
+            <span className="muted">Page {currentPage} of {totalPages}</span>
+            <button
+              className="secondary"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={currentPage === totalPages}
+            >
+              Next
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
