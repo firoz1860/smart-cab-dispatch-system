@@ -1,0 +1,105 @@
+import { Router } from "express";
+import { z } from "zod";
+import { prisma } from "../lib/prisma";
+import { requireAuth, requireRole } from "../middleware/auth";
+import { getNextStop } from "../engine/stops";
+
+export const guestRouter = Router();
+guestRouter.use(requireAuth, requireRole("GUEST"));
+
+function guestId(req: import("express").Request): string {
+  return req.auth!.guestId!;
+}
+
+guestRouter.get("/me", async (req, res) => {
+  const guest = await prisma.guest.findUnique({
+    where: { id: guestId(req) },
+    include: { accommodation: true },
+  });
+  res.json(guest);
+});
+
+/** All of this guest's trips across the event (scheduled + on-demand),
+ * newest first - lets the guest see upcoming pickups and past rides. */
+guestRouter.get("/trips", async (req, res) => {
+  const tripGuests = await prisma.tripGuest.findMany({
+    where: { guestId: guestId(req) },
+    include: { trip: { include: { driver: true } } },
+  });
+  const trips = tripGuests
+    .map((tg) => ({ ...tg.trip, myStopOrder: tg.stopOrder, myBoarded: tg.boarded, myDroppedOff: tg.droppedOff }))
+    .filter((t) => t.status !== "CANCELLED")
+    .sort((a, b) => b.requestedAt.getTime() - a.requestedAt.getTime());
+  res.json(trips);
+});
+
+/** The guest's currently active trip (if matched), including driver name,
+ * vehicle number, and live ETA - for the "track your ride" map screen. */
+guestRouter.get("/current-trip", async (req, res) => {
+  const tripGuest = await prisma.tripGuest.findFirst({
+    where: {
+      guestId: guestId(req),
+      trip: { status: { in: ["ASSIGNED", "EN_ROUTE_PICKUP", "ARRIVED_PICKUP", "IN_PROGRESS"] } },
+    },
+    include: { trip: { include: { driver: true, guests: true } } },
+  });
+  if (!tripGuest) return res.json(null);
+  const { trip } = tripGuest;
+  res.json({
+    trip,
+    driver: trip.driver,
+    nextStop: getNextStop(trip, trip.guests),
+    myBoarded: tripGuest.boarded,
+    myDroppedOff: tripGuest.droppedOff,
+  });
+});
+
+const requestSchema = z.object({
+  pickupLabel: z.string(),
+  pickupLat: z.number(),
+  pickupLng: z.number(),
+  dropLabel: z.string(),
+  dropLat: z.number(),
+  dropLng: z.number(),
+});
+
+/** Guest raises an on-demand ride request. This does NOT go straight to
+ * auto-allocation - it lands in Admin/Operations' approval queue first
+ * (PENDING_APPROVAL). Once approved, the matching engine allocates a driver
+ * automatically exactly as for scheduled pickups. */
+guestRouter.post("/request", async (req, res) => {
+  const parsed = requestSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const guest = await prisma.guest.findUnique({ where: { id: guestId(req) } });
+  if (!guest) return res.status(404).json({ error: "Guest not found" });
+
+  const existingPending = await prisma.tripGuest.findFirst({
+    where: { guestId: guest.id, trip: { status: { in: ["PENDING_APPROVAL", "QUEUED"] } } },
+  });
+  if (existingPending) {
+    return res.status(409).json({ error: "You already have a pending or queued request" });
+  }
+
+  const t = parsed.data;
+  const trip = await prisma.trip.create({
+    data: {
+      type: "ON_DEMAND",
+      origin: "ON_DEMAND",
+      status: "PENDING_APPROVAL",
+      pickupLabel: t.pickupLabel,
+      pickupLat: t.pickupLat,
+      pickupLng: t.pickupLng,
+      dropLabel: t.dropLabel,
+      dropLat: t.dropLat,
+      dropLng: t.dropLng,
+      totalSeats: guest.partySize,
+      totalLuggage: guest.luggageCount,
+      guests: { create: { guestId: guest.id, seats: guest.partySize, luggage: guest.luggageCount } },
+    },
+  });
+  res.status(201).json(trip);
+});
+
+guestRouter.get("/places", requireAuth, async (_req, res) => {
+  res.json(await prisma.place.findMany());
+});

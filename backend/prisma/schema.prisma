@@ -1,0 +1,151 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// NOTE: SQLite has no native enum support in Prisma, so enums below are modeled
+// as `String` columns. The allowed value sets are enforced at the application
+// layer via TS union types in src/lib/constants.ts (Role, PlaceType, DriverStatus,
+// TripType, TripOrigin, TripStatus).
+
+model Event {
+  id        String   @id @default(cuid())
+  name      String
+  startDate DateTime
+  endDate   DateTime
+  // config
+  breakSecondsAfterTrip Int @default(600)
+  maxDetourSeconds      Int @default(480)
+  createdAt DateTime @default(now())
+}
+
+model Place {
+  id   String @id @default(cuid())
+  name String
+  type String // PlaceType
+  lat  Float
+  lng  Float
+
+  guestsAccommodated Guest[] @relation("GuestAccommodation")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  role      String // Role
+  phone     String   @unique
+  name      String
+  pinHash   String
+  driverId  String?  @unique
+  guestId   String?  @unique
+  driver    Driver?  @relation(fields: [driverId], references: [id])
+  guest     Guest?   @relation(fields: [guestId], references: [id])
+  createdAt DateTime @default(now())
+}
+
+model Driver {
+  id              String    @id @default(cuid())
+  name            String
+  phone           String    @unique
+  vehicleNumber   String
+  seatCapacity    Int
+  luggageCapacity Int
+  status          String    @default("OFFLINE") // DriverStatus
+  currentLat      Float
+  currentLng      Float
+  freeAt          DateTime? // predicted time this driver becomes free (null = free now)
+  lastUpdatedAt   DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+
+  user  User?
+  trips Trip[]
+
+  @@index([status])
+}
+
+model Guest {
+  id              String   @id @default(cuid())
+  name            String
+  phone           String   @unique
+  partySize       Int      @default(1)
+  luggageCount    Int      @default(1)
+  accommodationId String?
+  accommodation   Place?   @relation("GuestAccommodation", fields: [accommodationId], references: [id])
+  notes           String? // manual admin notes, e.g. walk-in, flight change
+  createdAt       DateTime @default(now())
+
+  user       User?
+  tripGuests TripGuest[]
+}
+
+model Trip {
+  id     String @id @default(cuid())
+  type   String // TripType
+  origin String @default("SCHEDULED") // TripOrigin
+  status String @default("QUEUED") // TripStatus
+
+  pickupLabel String
+  pickupLat   Float
+  pickupLng   Float
+  dropLabel   String
+  dropLat     Float
+  dropLng     Float
+
+  scheduledTime DateTime? // known arrival/departure time, if any
+  deadline      DateTime? // latest acceptable arrival at drop
+  requestedAt   DateTime  @default(now())
+  approvedAt    DateTime?
+  assignedAt    DateTime?
+  pickedUpAt    DateTime?
+  completedAt   DateTime?
+
+  totalSeats   Int @default(0)
+  totalLuggage Int @default(0)
+
+  etaSeconds        Int? // current live ETA to next milestone (pickup or drop)
+  priorityScore     Float  @default(0)
+  rejectedDriverIds String @default("") // comma-separated, drivers who rejected -> avoid reassigning same
+
+  driverId String?
+  driver   Driver? @relation(fields: [driverId], references: [id])
+
+  guests TripGuest[]
+
+  declineReason   String?
+  mergedIntoTripId String? // set when this trip was merged (clustered/detour) into another Trip
+  adminOverride    Boolean @default(false)
+  adminNote        String?
+
+  @@index([status])
+  @@index([driverId])
+}
+
+model TripGuest {
+  id         String  @id @default(cuid())
+  tripId     String
+  guestId    String
+  seats      Int
+  luggage    Int
+  boarded    Boolean @default(false)
+  droppedOff Boolean @default(false)
+  stopOrder  Int     @default(0)
+
+  // Per-guest stop override. Null = inherit the parent Trip's pickup/drop.
+  // Used when a guest is merged into an in-progress/shared Trip via clustering
+  // or opportunistic detour insertion, and their actual pickup/drop point
+  // differs from the Trip's primary pickup/drop.
+  stopPickupLabel String?
+  stopPickupLat   Float?
+  stopPickupLng   Float?
+  stopDropLabel   String?
+  stopDropLat     Float?
+  stopDropLng     Float?
+
+  trip  Trip  @relation(fields: [tripId], references: [id])
+  guest Guest @relation(fields: [guestId], references: [id])
+
+  @@unique([tripId, guestId])
+}

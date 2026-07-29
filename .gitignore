@@ -1,0 +1,7 @@
+node_modules/
+dist/
+build/
+backend/dev.db
+backend/dev.db-journal
+*.log
+.DS_Store
