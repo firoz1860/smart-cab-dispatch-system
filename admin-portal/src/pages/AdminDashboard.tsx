@@ -4,6 +4,7 @@ import { getSocket } from "../api/socket";
 import { useAuth } from "../auth/AuthContext";
 import { MapView, type MapMarker } from "../components/MapView";
 import { formatDuration } from "../lib/format";
+import { useLiveCountdown } from "../lib/useLiveCountdown";
 import type { Driver, Guest, Place, Trip, Event } from "../types";
 
 type Tab = "overview" | "drivers" | "guests" | "requests" | "trips";
@@ -72,6 +73,17 @@ export function AdminDashboard() {
       socket.on("trip:detour-merged", onChange);
       socket.on("trip:unassignable", onChange);
       socket.on("trip:admin-override", onChange);
+      const onDriverLocation = (data: { driverId: string; lat: number; lng: number; tripId: string | null; etaSeconds: number | null }) => {
+        setDrivers((prev) =>
+          prev.map((d) => (d.id === data.driverId ? { ...d, currentLat: data.lat, currentLng: data.lng } : d))
+        );
+        if (data.tripId) {
+          setTrips((prev) =>
+            prev.map((t) => (t.id === data.tripId ? { ...t, etaSeconds: data.etaSeconds ?? t.etaSeconds } : t))
+          );
+        }
+      };
+      socket.on("driver:location", onDriverLocation);
       return () => {
         clearInterval(interval);
         socket.off("trip:assigned", onChange);
@@ -81,6 +93,7 @@ export function AdminDashboard() {
         socket.off("trip:detour-merged", onChange);
         socket.off("trip:unassignable", onChange);
         socket.off("trip:admin-override", onChange);
+        socket.off("driver:location", onDriverLocation);
       };
     }
     return () => clearInterval(interval);
@@ -568,6 +581,11 @@ function RequestsPanel({ requests, onChanged }: { requests: Trip[]; onChanged: (
   );
 }
 
+function TripEtaCell({ etaSeconds }: { etaSeconds: number | null }) {
+  const liveEta = useLiveCountdown(etaSeconds);
+  return <td>{liveEta != null ? formatDuration(liveEta) : "—"}</td>;
+}
+
 function TripsPanel({ trips, drivers, onChanged }: { trips: Trip[]; drivers: Driver[]; onChanged: () => void }) {
   const [overridingTripId, setOverridingTripId] = useState<string | null>(null);
   const [selectedDriverId, setSelectedDriverId] = useState("");
@@ -638,7 +656,7 @@ function TripsPanel({ trips, drivers, onChanged }: { trips: Trip[]; drivers: Dri
                 <td>{t.totalSeats}s/{t.totalLuggage}l</td>
                 <td><StatusBadge status={t.status} /></td>
                 <td>{t.driver?.name ?? "—"}</td>
-                <td>{t.etaSeconds ? formatDuration(t.etaSeconds) : "—"}</td>
+                <TripEtaCell etaSeconds={t.etaSeconds} />
                 <td>
                   {(t.status === "QUEUED" || t.status === "UNASSIGNABLE") && (
                     overridingTripId === t.id ? (

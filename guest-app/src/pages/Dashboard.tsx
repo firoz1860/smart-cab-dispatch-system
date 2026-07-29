@@ -4,6 +4,7 @@ import { getSocket } from "../api/socket";
 import { useAuth } from "../auth/AuthContext";
 import { MapView } from "../components/MapView";
 import { formatDuration } from "../lib/format";
+import { useLiveCountdown } from "../lib/useLiveCountdown";
 import type { Guest, Trip, Place } from "../types";
 
 function StatusLabel({ status }: { status: string }) {
@@ -62,15 +63,31 @@ export function Dashboard() {
         setNotification("You've arrived at your destination.");
         refresh();
       });
+      socket.on(
+        "driver:location",
+        (data: { driverId: string; lat: number; lng: number; etaSeconds: number | null }) => {
+          setCurrentTrip((prev) => {
+            if (!prev || !prev.driver || prev.driver.id !== data.driverId) return prev;
+            return {
+              ...prev,
+              driver: { ...prev.driver, currentLat: data.lat, currentLng: data.lng },
+              trip: { ...prev.trip, etaSeconds: data.etaSeconds ?? prev.trip.etaSeconds },
+            };
+          });
+        }
+      );
       return () => {
         clearInterval(interval);
         socket.off("trip:matched");
         socket.off("trip:boarded");
         socket.off("trip:dropped");
+        socket.off("driver:location");
       };
     }
     return () => clearInterval(interval);
   }, [refresh, session]);
+
+  const liveEtaSeconds = useLiveCountdown(currentTrip?.trip.etaSeconds);
 
   const GUEST_BLOCKING_STATUSES = ["PENDING_APPROVAL", "QUEUED", "ASSIGNED", "EN_ROUTE_PICKUP", "ARRIVED_PICKUP", "IN_PROGRESS"];
   const hasPendingOrQueued = trips.some((t) => GUEST_BLOCKING_STATUSES.includes(t.status));
@@ -119,8 +136,8 @@ export function Dashboard() {
               {currentTrip.driver && (
                 <div className="driver-info">
                   <p><strong>{currentTrip.driver.name}</strong> · {currentTrip.driver.vehicleNumber}</p>
-                  {currentTrip.trip.etaSeconds != null && (
-                    <p className="eta">ETA: ~{formatDuration(currentTrip.trip.etaSeconds)}</p>
+                  {liveEtaSeconds != null && (
+                    <p className="eta">ETA: ~{formatDuration(liveEtaSeconds)}</p>
                   )}
                 </div>
               )}

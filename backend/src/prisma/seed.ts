@@ -24,8 +24,20 @@ const FIRST_NAMES = [
 ];
 const LAST_NAMES = ["Sharma", "Verma", "Iyer", "Nair", "Reddy", "Gupta", "Menon", "Rao"];
 
+// Maps i -> a (first, last) pair via a multiplicative bijection over the full
+// 16*8=128-combination space (41 is coprime to 128, so i*41 mod 128 visits
+// every combination exactly once before repeating). This avoids the original
+// bug (both indices keyed off `i % length` directly repeated every
+// LCM(16, 8) = 16 records) without falling back to long same-surname runs -
+// the phone number is still each record's real unique identifier, but demo
+// data shouldn't make distinct people look like duplicates by sharing a
+// display name too.
+const TOTAL_NAME_COMBOS = FIRST_NAMES.length * LAST_NAMES.length;
 function name(i: number): string {
-  return `${FIRST_NAMES[i % FIRST_NAMES.length]} ${LAST_NAMES[i % LAST_NAMES.length]}`;
+  const shuffled = (i * 41) % TOTAL_NAME_COMBOS;
+  const first = FIRST_NAMES[shuffled % FIRST_NAMES.length];
+  const last = LAST_NAMES[Math.floor(shuffled / FIRST_NAMES.length) % LAST_NAMES.length];
+  return `${first} ${last}`;
 }
 
 function jitterLatLng(lat: number, lng: number, spreadKm = 2): { lat: number; lng: number } {

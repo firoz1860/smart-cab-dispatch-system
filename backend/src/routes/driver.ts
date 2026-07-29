@@ -5,6 +5,8 @@ import { requireAuth, requireRole } from "../middleware/auth";
 import { acceptTrip, rejectTrip, advanceTripStop, TripActionError } from "../engine/tripActions";
 import { getNextStop, allStopsForDisplay } from "../engine/stops";
 import { runDispatchTick } from "../engine/matchingEngine";
+import { getDistanceProvider } from "../lib/distanceProvider";
+import { emitDispatchEvent, emitToGuest } from "../realtime/socket";
 
 export const driverRouter = Router();
 driverRouter.use(requireAuth, requireRole("DRIVER"));
@@ -30,15 +32,47 @@ driverRouter.post("/status", async (req, res) => {
   res.json(driver);
 });
 
+/** Live position ping from the driver's browser (geolocation watchPosition).
+ * Besides persisting the position, this recomputes ETA for just this
+ * driver's active trip (cheap - a single distance lookup, not a full fleet
+ * sweep like the periodic dispatch tick) and pushes both the new position and
+ * ETA out over the socket immediately, so the admin map and the guest's live
+ * tracking screen update in real time instead of waiting for their next poll. */
 driverRouter.post("/location", async (req, res) => {
   const schema = z.object({ lat: z.number(), lng: z.number() });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const id = driverId(req);
+  const { lat, lng } = parsed.data;
+
   await prisma.driver.update({
-    where: { id: driverId(req) },
-    data: { currentLat: parsed.data.lat, currentLng: parsed.data.lng, lastUpdatedAt: new Date() },
+    where: { id },
+    data: { currentLat: lat, currentLng: lng, lastUpdatedAt: new Date() },
   });
-  res.json({ ok: true });
+
+  const trip = await prisma.trip.findFirst({
+    where: { driverId: id, status: { in: ["ASSIGNED", "EN_ROUTE_PICKUP", "ARRIVED_PICKUP", "IN_PROGRESS"] } },
+    include: { guests: true },
+  });
+
+  let etaSeconds: number | null = null;
+  if (trip) {
+    const next = getNextStop(trip, trip.guests);
+    if (next) {
+      const provider = getDistanceProvider();
+      const eta = await provider.getEta({ lat, lng }, { lat: next.lat, lng: next.lng });
+      etaSeconds = eta.durationSeconds;
+      await prisma.trip.update({ where: { id: trip.id }, data: { etaSeconds } });
+    }
+  }
+
+  const payload = { driverId: id, lat, lng, tripId: trip?.id ?? null, etaSeconds };
+  emitDispatchEvent("driver:location", payload);
+  if (trip) {
+    for (const g of trip.guests) emitToGuest(g.guestId, "driver:location", payload);
+  }
+
+  res.json({ ok: true, etaSeconds });
 });
 
 /** The driver's single active trip (never the full queue/dashboard - that's
