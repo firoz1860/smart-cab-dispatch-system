@@ -109,6 +109,18 @@ export async function clusterQueuedTrips(): Promise<string[]> {
         (t) => t.pickupLabel === survivor.pickupLabel
       );
 
+      // Stops are keyed by exact pickup+drop location, not by which original
+      // trip they came from: two merged trips that happen to share the same
+      // pickup and drop point (e.g. two separate bookings on the same flight
+      // going to the same hotel) are one physical stop, and must get the same
+      // stopOrder so the driver boards/drops them together instead of seeing
+      // duplicate "stop" entries for the identical place.
+      const stopLocationKey = (t: { pickupLat: number; pickupLng: number; dropLat: number; dropLng: number }) =>
+        `${t.pickupLat.toFixed(5)},${t.pickupLng.toFixed(5)}|${t.dropLat.toFixed(5)},${t.dropLng.toFixed(5)}`;
+      const stopOrderByLocation = new Map<string, number>();
+      stopOrderByLocation.set(stopLocationKey(survivor), 0);
+      let nextOrder = 1;
+
       await prisma.$transaction(async (tx) => {
         // Give the survivor's own guests an explicit stop override equal to
         // their original pickup/drop, since the parent Trip's pickup/drop is
@@ -128,8 +140,13 @@ export async function clusterQueuedTrips(): Promise<string[]> {
           });
         }
 
-        let order = 1;
         for (const other of others) {
+          const key = stopLocationKey(other);
+          let order = stopOrderByLocation.get(key);
+          if (order === undefined) {
+            order = nextOrder++;
+            stopOrderByLocation.set(key, order);
+          }
           for (const tg of other.guests) {
             await tx.tripGuest.update({
               where: { id: tg.id },
@@ -145,7 +162,6 @@ export async function clusterQueuedTrips(): Promise<string[]> {
               },
             });
           }
-          order += 1;
           await tx.trip.update({
             where: { id: other.id },
             data: { status: "CANCELLED", mergedIntoTripId: survivor.id },

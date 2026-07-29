@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { getNextStop } from "../engine/stops";
+import { GUEST_BLOCKING_TRIP_STATUSES } from "../lib/constants";
 
 export const guestRouter = Router();
 guestRouter.use(requireAuth, requireRole("GUEST"));
@@ -74,10 +75,10 @@ guestRouter.post("/request", async (req, res) => {
   if (!guest) return res.status(404).json({ error: "Guest not found" });
 
   const existingPending = await prisma.tripGuest.findFirst({
-    where: { guestId: guest.id, trip: { status: { in: ["PENDING_APPROVAL", "QUEUED"] } } },
+    where: { guestId: guest.id, trip: { status: { in: GUEST_BLOCKING_TRIP_STATUSES } } },
   });
   if (existingPending) {
-    return res.status(409).json({ error: "You already have a pending or queued request" });
+    return res.status(409).json({ error: "You already have a pending or active ride request" });
   }
 
   const t = parsed.data;

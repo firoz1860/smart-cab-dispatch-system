@@ -54,12 +54,32 @@ export function getNextStop(trip: Trip, guests: TripGuest[]): Stop | null {
   return null;
 }
 
+/** Guests sharing the same stopOrder were clustered/detoured onto the same
+ * physical stop (e.g. a family, or a shared pickup point), so they must
+ * collapse into a single display row rather than one row per guest. */
 export function allStopsForDisplay(trip: Trip, guests: TripGuest[]) {
-  const pickups = [...guests]
-    .sort((a, b) => a.stopOrder - b.stopOrder)
-    .map((g) => ({ phase: "pickup" as const, ...guestPickup(trip, g), guestId: g.guestId, done: g.boarded }));
-  const drops = [...guests]
-    .sort((a, b) => a.stopOrder - b.stopOrder)
-    .map((g) => ({ phase: "drop" as const, ...guestDrop(trip, g), guestId: g.guestId, done: g.droppedOff }));
+  function groupByStop(
+    phase: "pickup" | "drop",
+    getPoint: (g: TripGuest) => { label: string; lat: number; lng: number },
+    isDone: (g: TripGuest) => boolean
+  ) {
+    const byOrder = new Map<number, { guestIds: string[]; done: boolean } & { label: string; lat: number; lng: number }>();
+    for (const g of [...guests].sort((a, b) => a.stopOrder - b.stopOrder)) {
+      const point = getPoint(g);
+      const existing = byOrder.get(g.stopOrder);
+      if (existing) {
+        existing.guestIds.push(g.guestId);
+        existing.done = existing.done && isDone(g);
+      } else {
+        byOrder.set(g.stopOrder, { ...point, guestIds: [g.guestId], done: isDone(g) });
+      }
+    }
+    return [...byOrder.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, s]) => ({ phase, label: s.label, lat: s.lat, lng: s.lng, guestId: s.guestIds[0], done: s.done }));
+  }
+
+  const pickups = groupByStop("pickup", (g) => guestPickup(trip, g), (g) => g.boarded);
+  const drops = groupByStop("drop", (g) => guestDrop(trip, g), (g) => g.droppedOff);
   return [...pickups, ...drops];
 }

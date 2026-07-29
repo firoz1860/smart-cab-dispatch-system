@@ -5,3 +5,4 @@ backend/dev.db
 backend/dev.db-journal
 *.log
 .DS_Store
+.env

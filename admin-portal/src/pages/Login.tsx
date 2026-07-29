@@ -27,8 +27,11 @@ export function Login() {
   return (
     <div className="centered-page">
       <form className="card login-card" onSubmit={handleSubmit}>
-        <h1>Smart Cab Dispatch</h1>
-        <p className="subtitle">Admin &amp; Driver Portal</p>
+        <div className="login-header">
+          <span className="brand-mark">🚕</span>
+          <h1>Smart Cab Dispatch</h1>
+          <p className="subtitle">Admin &amp; Driver Portal</p>
+        </div>
         <label>
           Phone
           <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="e.g. 9000000001" required />
@@ -47,7 +50,11 @@ export function Login() {
         <button type="submit" disabled={loading}>
           {loading ? "Signing in..." : "Sign in"}
         </button>
-        <p className="hint">Admin demo: 9000000001 / admin123 · Driver demo: 9010000000 / 1234</p>
+        <div className="demo-hint">
+          <strong>Demo logins</strong>
+          <span>Admin — <code>9000000001</code> / <code>admin123</code></span>
+          <span>Driver — <code>9010000000</code> / <code>1234</code></span>
+        </div>
       </form>
     </div>
   );

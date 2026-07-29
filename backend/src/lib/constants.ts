@@ -49,3 +49,7 @@ export const ACTIVE_TRIP_STATUSES: TripStatus[] = [
   "ARRIVED_PICKUP",
   "IN_PROGRESS",
 ];
+
+// Statuses that mean a guest already has a pending or active ride and
+// shouldn't be allowed to raise another on-demand request until it resolves.
+export const GUEST_BLOCKING_TRIP_STATUSES: TripStatus[] = ["PENDING_APPROVAL", ...ACTIVE_TRIP_STATUSES];

@@ -3,6 +3,7 @@ import { api, ApiError } from "../api/client";
 import { getSocket } from "../api/socket";
 import { useAuth } from "../auth/AuthContext";
 import { MapView } from "../components/MapView";
+import { formatDuration } from "../lib/format";
 import type { Guest, Trip, Place } from "../types";
 
 function StatusLabel({ status }: { status: string }) {
@@ -71,7 +72,8 @@ export function Dashboard() {
     return () => clearInterval(interval);
   }, [refresh, session]);
 
-  const hasPendingOrQueued = trips.some((t) => t.status === "PENDING_APPROVAL" || t.status === "QUEUED");
+  const GUEST_BLOCKING_STATUSES = ["PENDING_APPROVAL", "QUEUED", "ASSIGNED", "EN_ROUTE_PICKUP", "ARRIVED_PICKUP", "IN_PROGRESS"];
+  const hasPendingOrQueued = trips.some((t) => GUEST_BLOCKING_STATUSES.includes(t.status));
   const upcoming = trips.filter((t) =>
     ["QUEUED", "ASSIGNED", "EN_ROUTE_PICKUP", "ARRIVED_PICKUP", "IN_PROGRESS", "PENDING_APPROVAL", "UNASSIGNABLE"].includes(t.status)
   );
@@ -80,8 +82,17 @@ export function Dashboard() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div><strong>Smart Cab Dispatch</strong></div>
-        <div>{session?.name} <button className="link-btn" onClick={logout}>Log out</button></div>
+        <div className="brand">
+          <span className="brand-mark">🚕</span>
+          <div className="brand-text">
+            <span className="brand-title">Smart Cab Dispatch</span>
+            <span className="brand-subtitle">Guest</span>
+          </div>
+        </div>
+        <div className="user-chip">
+          <span className="user-name">{session?.name}</span>
+          <button className="logout-btn" onClick={logout}>Log out</button>
+        </div>
       </header>
 
       {notification && (
@@ -91,90 +102,96 @@ export function Dashboard() {
       )}
       {error && <div className="error-banner">{error}</div>}
 
-      <div className="card">
-        <h3>Hi {guest?.name?.split(" ")[0]} 👋</h3>
-        <p className="muted">
-          Party of {guest?.partySize} · {guest?.luggageCount} bag(s)
-          {guest?.accommodation && <> · Staying at <strong>{guest.accommodation.name}</strong></>}
-        </p>
-      </div>
+      <div className="guest-layout">
+        <div className="guest-col">
+          <div className="card">
+            <h3>Hi {guest?.name?.split(" ")[0]} 👋</h3>
+            <p className="muted">
+              Party of {guest?.partySize} · {guest?.luggageCount} bag(s)
+              {guest?.accommodation && <> · Staying at <strong>{guest.accommodation.name}</strong></>}
+            </p>
+          </div>
 
-      {currentTrip && (
-        <div className="card highlight">
-          <h3>Your ride</h3>
-          <StatusLabel status={currentTrip.trip.status} />
-          {currentTrip.driver && (
-            <div className="driver-info">
-              <p><strong>{currentTrip.driver.name}</strong> · {currentTrip.driver.vehicleNumber}</p>
-              {currentTrip.trip.etaSeconds != null && (
-                <p className="eta">ETA: ~{Math.max(1, Math.round(currentTrip.trip.etaSeconds / 60))} min</p>
+          {currentTrip && (
+            <div className="card highlight">
+              <h3>Your ride</h3>
+              <StatusLabel status={currentTrip.trip.status} />
+              {currentTrip.driver && (
+                <div className="driver-info">
+                  <p><strong>{currentTrip.driver.name}</strong> · {currentTrip.driver.vehicleNumber}</p>
+                  {currentTrip.trip.etaSeconds != null && (
+                    <p className="eta">ETA: ~{formatDuration(currentTrip.trip.etaSeconds)}</p>
+                  )}
+                </div>
               )}
+              <MapView
+                center={[currentTrip.trip.pickupLat, currentTrip.trip.pickupLng]}
+                markers={[
+                  { id: "pickup", lat: currentTrip.trip.pickupLat, lng: currentTrip.trip.pickupLng, label: currentTrip.trip.pickupLabel, variant: "place" },
+                  { id: "drop", lat: currentTrip.trip.dropLat, lng: currentTrip.trip.dropLng, label: currentTrip.trip.dropLabel, variant: "place" },
+                  ...(currentTrip.driver
+                    ? [{ id: "driver", lat: currentTrip.driver.currentLat, lng: currentTrip.driver.currentLng, label: "Your driver", variant: "driver" as const }]
+                    : []),
+                ]}
+              />
             </div>
           )}
-          <MapView
-            center={[currentTrip.trip.pickupLat, currentTrip.trip.pickupLng]}
-            markers={[
-              { id: "pickup", lat: currentTrip.trip.pickupLat, lng: currentTrip.trip.pickupLng, label: currentTrip.trip.pickupLabel, variant: "place" },
-              { id: "drop", lat: currentTrip.trip.dropLat, lng: currentTrip.trip.dropLng, label: currentTrip.trip.dropLabel, variant: "place" },
-              ...(currentTrip.driver
-                ? [{ id: "driver", lat: currentTrip.driver.currentLat, lng: currentTrip.driver.currentLng, label: "Your driver", variant: "driver" as const }]
-                : []),
-            ]}
-          />
         </div>
-      )}
 
-      <div className="card">
-        <div className="row-between">
-          <h3>Request a ride</h3>
-          {!showRequestForm && (
-            <button onClick={() => setShowRequestForm(true)} disabled={hasPendingOrQueued}>
-              New request
-            </button>
+        <div className="guest-col">
+          <div className="card">
+            <div className="row-between">
+              <h3>Request a ride</h3>
+              {!showRequestForm && (
+                <button onClick={() => setShowRequestForm(true)} disabled={hasPendingOrQueued}>
+                  New request
+                </button>
+              )}
+            </div>
+            {hasPendingOrQueued && !showRequestForm && (
+              <p className="muted">You already have a request in progress — see below.</p>
+            )}
+            {showRequestForm && (
+              <RequestForm
+                places={places}
+                onCancel={() => setShowRequestForm(false)}
+                onSubmitted={() => {
+                  setShowRequestForm(false);
+                  refresh();
+                }}
+              />
+            )}
+          </div>
+
+          <div className="card">
+            <h3>Upcoming</h3>
+            {upcoming.length === 0 && <p className="muted">No upcoming trips.</p>}
+            <ul className="trip-list">
+              {upcoming.map((t) => (
+                <li key={t.id}>
+                  <div>{t.pickupLabel} → {t.dropLabel}</div>
+                  <StatusLabel status={t.status} />
+                  {t.scheduledTime && <div className="muted">{new Date(t.scheduledTime).toLocaleString()}</div>}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {past.length > 0 && (
+            <div className="card">
+              <h3>Past trips</h3>
+              <ul className="trip-list">
+                {past.map((t) => (
+                  <li key={t.id}>
+                    <div>{t.pickupLabel} → {t.dropLabel}</div>
+                    <StatusLabel status={t.status} />
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
-        {hasPendingOrQueued && !showRequestForm && (
-          <p className="muted">You already have a request in progress — see below.</p>
-        )}
-        {showRequestForm && (
-          <RequestForm
-            places={places}
-            onCancel={() => setShowRequestForm(false)}
-            onSubmitted={() => {
-              setShowRequestForm(false);
-              refresh();
-            }}
-          />
-        )}
       </div>
-
-      <div className="card">
-        <h3>Upcoming</h3>
-        {upcoming.length === 0 && <p className="muted">No upcoming trips.</p>}
-        <ul className="trip-list">
-          {upcoming.map((t) => (
-            <li key={t.id}>
-              <div>{t.pickupLabel} → {t.dropLabel}</div>
-              <StatusLabel status={t.status} />
-              {t.scheduledTime && <div className="muted">{new Date(t.scheduledTime).toLocaleString()}</div>}
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      {past.length > 0 && (
-        <div className="card">
-          <h3>Past trips</h3>
-          <ul className="trip-list">
-            {past.map((t) => (
-              <li key={t.id}>
-                <div>{t.pickupLabel} → {t.dropLabel}</div>
-                <StatusLabel status={t.status} />
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
     </div>
   );
 }

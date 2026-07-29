@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { requireAuth, requireRole } from "../middleware/auth";
-import { PLACE_TYPES, TRIP_TYPES } from "../lib/constants";
+import { PLACE_TYPES, TRIP_TYPES, ACTIVE_TRIP_STATUSES } from "../lib/constants";
 import { runDispatchTick, runBatchAssignment } from "../engine/matchingEngine";
 import { adminOverrideAssign, TripActionError } from "../engine/tripActions";
 import { getNextStop } from "../engine/stops";
@@ -73,15 +73,60 @@ adminRouter.post("/drivers", async (req, res) => {
 
 adminRouter.patch("/drivers/:id", async (req, res) => {
   const schema = z.object({
+    name: z.string().min(1).optional(),
+    phone: z.string().min(3).optional(),
     status: z.enum(["OFFLINE", "AVAILABLE"]).optional(),
     seatCapacity: z.number().int().positive().optional(),
     luggageCapacity: z.number().int().nonnegative().optional(),
     vehicleNumber: z.string().optional(),
+    currentLat: z.number().optional(),
+    currentLng: z.number().optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  const driver = await prisma.driver.update({ where: { id: req.params.id }, data: parsed.data });
+  const existingDriver = await prisma.driver.findUnique({ where: { id: req.params.id } });
+  if (!existingDriver) return res.status(404).json({ error: "Driver not found" });
+
+  const { name, phone, ...driverFields } = parsed.data;
+  if (phone) {
+    const existingUser = await prisma.user.findUnique({ where: { phone } });
+    if (existingUser && existingUser.driverId !== req.params.id) {
+      return res.status(409).json({ error: "Phone already registered to another user" });
+    }
+  }
+
+  const driver = await prisma.driver.update({
+    where: { id: req.params.id },
+    data: { ...driverFields, ...(name ? { name } : {}) },
+  });
+  if (name || phone) {
+    await prisma.user.updateMany({
+      where: { driverId: req.params.id },
+      data: { ...(name ? { name } : {}), ...(phone ? { phone } : {}) },
+    });
+  }
   res.json(driver);
+});
+
+adminRouter.delete("/drivers/:id", async (req, res) => {
+  const driver = await prisma.driver.findUnique({ where: { id: req.params.id } });
+  if (!driver) return res.status(404).json({ error: "Driver not found" });
+
+  const activeTrip = await prisma.trip.findFirst({
+    where: { driverId: driver.id, status: { in: ACTIVE_TRIP_STATUSES } },
+  });
+  if (activeTrip) {
+    return res.status(400).json({
+      error: `${driver.name} has an active trip and can't be removed until it's completed or reassigned.`,
+    });
+  }
+
+  await prisma.$transaction([
+    prisma.trip.updateMany({ where: { driverId: driver.id }, data: { driverId: null } }),
+    prisma.user.deleteMany({ where: { driverId: driver.id } }),
+    prisma.driver.delete({ where: { id: driver.id } }),
+  ]);
+  res.json({ ok: true });
 });
 
 // ---- Places -----------------------------------------------------------------

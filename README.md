@@ -100,3 +100,63 @@ Each app has its own `.env` (already populated with working local defaults):
   environment (no browser automation tool was available this session); if
   something looks off visually after `npm run dev`, that's the first place to
   check.
+
+## How it works — a worked example
+
+Say a guest, Sneha, needs a ride from her hotel to the venue mid-afternoon,
+outside her originally scheduled pickup. Here's what happens across the three
+apps and the matching engine, end to end.
+
+1. **Guest requests a ride** (guest-app, port 5175). Sneha logs in, hits
+   "New request," picks "Hilltop Residency" as pickup and "Grand Convene
+   Center" as drop from the seeded `Place` list, and submits. This creates a
+   `Trip` row with `origin: "ON_DEMAND"` and `status: "PENDING_APPROVAL"` —
+   it does **not** touch the dispatch engine yet.
+
+2. **Admin approves it** (admin-portal, port 5174, Admin login). The request
+   shows up under the "Requests" tab (`GET /admin/requests`). The admin
+   clicks Approve, which flips the trip to `status: "QUEUED"` and immediately
+   fires `runDispatchTick()` in the background rather than waiting for the
+   next automatic pass.
+
+3. **The dispatch engine matches a driver** (`backend/src/engine/matchingEngine.ts`).
+   A tick runs automatically every 15s and also after key actions (approval,
+   accept, drop, etc.). Each tick:
+   - Splits any trip whose party is too big for one vehicle
+     (`splitOversizedTrips`).
+   - Clusters queued trips headed the same way so one driver can pick up
+     multiple parties (`clusterQueuedTrips`).
+   - Tries to slot the trip into a driver who is already en route nearby,
+     if it fits within the configured max-detour budget (`tryDetourInsertion`).
+   - Otherwise runs a Hungarian-algorithm optimal assignment
+     (`runBatchAssignment`) over every `AVAILABLE` driver and every `QUEUED`
+     trip, using real ETA (or the built-in Haversine/traffic-simulated
+     fallback) as cost, biased by each trip's wait-time/deadline priority
+     score, and respecting seat/luggage capacity.
+   - Recomputes live ETAs for every in-flight trip afterward.
+
+   Say driver Arjun is `AVAILABLE` and has the lowest effective cost for
+   Sneha's pickup — he gets assigned. His `Driver.status` flips to
+   `ASSIGNED`, the trip's `status` flips to `ASSIGNED`, and a `trip:assigned`
+   socket event fires.
+
+4. **Driver accepts and drives** (admin-portal, Driver login). Arjun's
+   Driver View polls `/driver/trip` and sees the new assignment, clicks
+   Accept, then "Mark arrived & guest boarded" once he reaches Sneha, then
+   "Mark arrived & guest dropped" at the venue. Each action advances the
+   trip through `EN_ROUTE_PICKUP` → `ARRIVED_PICKUP` → `IN_PROGRESS` →
+   `COMPLETED` (`backend/src/engine/tripActions.ts` + `stops.ts` for
+   multi-stop ordering), and emits socket events (`trip:accepted`,
+   `trip:boarded`, `trip:dropped`) that both the admin dashboard and Sneha's
+   guest-app pick up live — no polling delay needed for that part.
+
+5. **Driver goes back on the pool.** After drop-off, Arjun is put
+   `ON_BREAK` for the event's configured mandatory rest period
+   (`breakSecondsAfterTrip`), then automatically flips back to `AVAILABLE`
+   (`refreshDriverAvailability`) so the next tick can assign him again.
+
+Throughout, the **Admin/Operations dashboard** is the single place that sees
+everything at once: the live map (driver positions + venue/accommodation/
+airport pins), fleet and trip status summaries, and a manual "Override
+assign" escape hatch for any trip stuck as `QUEUED` or `UNASSIGNABLE` that
+the algorithm can't place automatically (e.g. no driver has spare capacity).

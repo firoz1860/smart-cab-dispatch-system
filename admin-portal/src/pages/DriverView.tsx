@@ -96,8 +96,17 @@ export function DriverView() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div><strong>Smart Cab Dispatch</strong> — Driver</div>
-        <div>{session?.name} <button className="link-btn" onClick={logout}>Log out</button></div>
+        <div className="brand">
+          <span className="brand-mark">🚕</span>
+          <div className="brand-text">
+            <span className="brand-title">Smart Cab Dispatch</span>
+            <span className="brand-subtitle">Driver</span>
+          </div>
+        </div>
+        <div className="user-chip">
+          <span className="user-name">{session?.name}</span>
+          <button className="logout-btn" onClick={logout}>Log out</button>
+        </div>
       </header>
 
       {error && <div className="error-banner">{error}</div>}

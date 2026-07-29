@@ -2,6 +2,7 @@ import { prisma } from "../lib/prisma";
 import { getNextStop } from "./stops";
 import { emitToGuest, emitDispatchEvent } from "../realtime/socket";
 import { ENGINE_CONFIG } from "./config";
+import { ACTIVE_TRIP_STATUSES } from "../lib/constants";
 
 export class TripActionError extends Error {}
 
@@ -108,6 +109,19 @@ export async function adminOverrideAssign(tripId: string, driverId: string, note
   const trip = await loadTripOrThrow(tripId);
   const driver = await prisma.driver.findUnique({ where: { id: driverId } });
   if (!driver) throw new TripActionError("Driver not found");
+
+  if (trip.totalSeats > driver.seatCapacity || trip.totalLuggage > driver.luggageCapacity) {
+    throw new TripActionError(
+      `${driver.name}'s vehicle (${driver.seatCapacity} seat(s) / ${driver.luggageCapacity} bag(s)) can't fit this trip (needs ${trip.totalSeats} seat(s) / ${trip.totalLuggage} bag(s)).`
+    );
+  }
+
+  const conflictingTrip = await prisma.trip.findFirst({
+    where: { driverId, id: { not: tripId }, status: { in: ACTIVE_TRIP_STATUSES } },
+  });
+  if (conflictingTrip) {
+    throw new TripActionError(`${driver.name} is already on an active trip and can't be double-booked.`);
+  }
 
   await prisma.$transaction([
     prisma.trip.update({

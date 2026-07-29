@@ -27,8 +27,11 @@ export function Login() {
   return (
     <div className="centered-page">
       <form className="card login-card" onSubmit={handleSubmit}>
-        <h1>Welcome</h1>
-        <p className="subtitle">Sign in with the phone number the organizers registered for you.</p>
+        <div className="login-header">
+          <span className="brand-mark">🚕</span>
+          <h1>Welcome</h1>
+          <p className="subtitle">Sign in with the phone number the organizers registered for you.</p>
+        </div>
         <label>
           Phone
           <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="e.g. 92000000000" required />
@@ -41,7 +44,10 @@ export function Login() {
         <button type="submit" disabled={loading}>
           {loading ? "Signing in..." : "Sign in"}
         </button>
-        <p className="hint">Demo guest: 92000000000 / 1234</p>
+        <div className="demo-hint">
+          <strong>Demo guest login</strong>
+          <span><code>92000000000</code> / <code>1234</code></span>
+        </div>
       </form>
     </div>
   );
