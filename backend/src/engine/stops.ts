@@ -9,7 +9,7 @@ export interface Stop {
   tripGuestIds: string[];
 }
 
-function guestPickup(trip: Trip, g: TripGuest) {
+export function guestPickup(trip: Trip, g: TripGuest) {
   return {
     label: g.stopPickupLabel ?? trip.pickupLabel,
     lat: g.stopPickupLat ?? trip.pickupLat,
@@ -17,7 +17,7 @@ function guestPickup(trip: Trip, g: TripGuest) {
   };
 }
 
-function guestDrop(trip: Trip, g: TripGuest) {
+export function guestDrop(trip: Trip, g: TripGuest) {
   return {
     label: g.stopDropLabel ?? trip.dropLabel,
     lat: g.stopDropLat ?? trip.dropLat,

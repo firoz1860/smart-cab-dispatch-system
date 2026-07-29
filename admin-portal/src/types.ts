@@ -9,6 +9,7 @@ export interface Driver {
   currentLat: number;
   currentLng: number;
   freeAt: string | null;
+  totalEarningsCents: number;
 }
 
 export interface Guest {
@@ -65,6 +66,14 @@ export interface Trip {
   adminOverride: boolean;
   adminNote: string | null;
   declineReason: string | null;
+
+  // Present only on the guest-facing /guest/trips response - this guest's
+  // own progress/fare within (possibly shared) trip, not the trip as a whole.
+  myStopOrder?: number;
+  myBoarded?: boolean;
+  myDroppedOff?: boolean;
+  myFareAmountCents?: number | null;
+  myPaymentStatus?: string;
 }
 
 export interface Event {

@@ -1,8 +1,10 @@
 import { prisma } from "../lib/prisma";
-import { getNextStop } from "./stops";
-import { emitToGuest, emitDispatchEvent } from "../realtime/socket";
+import { getNextStop, guestPickup, guestDrop } from "./stops";
+import { emitToGuest, emitToDriver, emitDispatchEvent } from "../realtime/socket";
 import { ENGINE_CONFIG } from "./config";
 import { ACTIVE_TRIP_STATUSES } from "../lib/constants";
+import { computeFareCents } from "../lib/fare";
+import { getStripe } from "../lib/stripeClient";
 
 export class TripActionError extends Error {}
 
@@ -49,18 +51,47 @@ export async function rejectTrip(tripId: string, driverId: string) {
   emitDispatchEvent("trip:rejected", { tripId, driverId });
 }
 
-/** Advance the driver's current trip by one stop: either boarding the next
- * unboarded guest group (pickup phase) or dropping the next undropped guest
- * group (drop phase). Completes the trip and starts the driver's mandatory
- * break once every guest has been dropped. */
-export async function advanceTripStop(tripId: string, driverId: string) {
+/** Driver marks arrival at the current stop (pickup or drop), before the
+ * guest actually boards/is dropped. This is a distinct, recorded event from
+ * boarding/dropping so the gap between the two (how long the driver sat
+ * waiting) can be measured as halt time - see completeStop(). */
+export async function arriveAtStop(tripId: string, driverId: string) {
   const trip = await loadTripOrThrow(tripId);
   if (trip.driverId !== driverId) throw new TripActionError("Not your trip");
+  if (trip.currentStopArrivedAt) throw new TripActionError("Already marked arrived at this stop");
 
   const next = getNextStop(trip, trip.guests);
   if (!next) throw new TripActionError("Trip has no remaining stops");
 
   const now = new Date();
+  const newStatus = next.phase === "pickup" ? "ARRIVED_PICKUP" : "ARRIVED_DROP";
+
+  await prisma.trip.update({
+    where: { id: tripId },
+    data: { status: newStatus, currentStopArrivedAt: now },
+  });
+  for (const g of trip.guests.filter((g) => next.tripGuestIds.includes(g.id))) {
+    emitToGuest(g.guestId, next.phase === "pickup" ? "trip:driver-arrived-pickup" : "trip:driver-arrived-drop", { tripId });
+  }
+  emitDispatchEvent(next.phase === "pickup" ? "trip:arrived-pickup" : "trip:arrived-drop", { tripId, driverId });
+}
+
+/** Complete the stop the driver already marked "arrived" at: board the next
+ * unboarded guest group (pickup phase) or drop the next undropped guest group
+ * (drop phase). Completes the trip and starts the driver's mandatory break
+ * once every guest has been dropped. Requires arriveAtStop() to have been
+ * called first, so the halt time (arrival -> completion) can be recorded. */
+export async function completeStop(tripId: string, driverId: string) {
+  const trip = await loadTripOrThrow(tripId);
+  if (trip.driverId !== driverId) throw new TripActionError("Not your trip");
+  if (!trip.currentStopArrivedAt) throw new TripActionError("Mark arrival at this stop first");
+
+  const next = getNextStop(trip, trip.guests);
+  if (!next) throw new TripActionError("Trip has no remaining stops");
+
+  const now = new Date();
+  const haltSeconds = Math.max(0, Math.round((now.getTime() - trip.currentStopArrivedAt.getTime()) / 1000));
+  const totalHaltSeconds = trip.totalHaltSeconds + haltSeconds;
 
   if (next.phase === "pickup") {
     await prisma.tripGuest.updateMany({
@@ -72,7 +103,12 @@ export async function advanceTripStop(tripId: string, driverId: string) {
     await prisma.$transaction([
       prisma.trip.update({
         where: { id: tripId },
-        data: { status: newStatus, pickedUpAt: trip.pickedUpAt ?? now },
+        data: {
+          status: newStatus,
+          pickedUpAt: trip.pickedUpAt ?? now,
+          currentStopArrivedAt: null,
+          totalHaltSeconds,
+        },
       }),
       prisma.driver.update({ where: { id: driverId }, data: { status: newStatus === "IN_PROGRESS" ? "ON_TRIP" : "EN_ROUTE_PICKUP" } }),
     ]);
@@ -80,12 +116,43 @@ export async function advanceTripStop(tripId: string, driverId: string) {
       emitToGuest(g.guestId, "trip:boarded", { tripId });
     }
   } else {
-    await prisma.tripGuest.updateMany({
-      where: { id: { in: next.tripGuestIds } },
-      data: { droppedOff: true },
-    });
+    const droppedGuests = trip.guests.filter((g) => next.tripGuestIds.includes(g.id));
+    const stripe = getStripe();
+
+    // Fare and payment are per-guest (booking), not per-Trip, since a shared
+    // ride splits into separate charges per party - each one uses their own
+    // pickup/drop pair (respecting stop overrides from clustering/detour).
+    for (const g of droppedGuests) {
+      const fareAmountCents = computeFareCents(guestPickup(trip, g), guestDrop(trip, g));
+      let stripePaymentIntentId: string | null = null;
+      let paymentStatus: "UNPAID" | "PENDING" = "UNPAID";
+
+      if (stripe) {
+        try {
+          const intent = await stripe.paymentIntents.create({
+            amount: fareAmountCents,
+            currency: "inr",
+            metadata: { tripId, tripGuestId: g.id, guestId: g.guestId },
+            description: `Smart Cab Dispatch - trip ${tripId}`,
+          });
+          stripePaymentIntentId = intent.id;
+          paymentStatus = "PENDING";
+        } catch (err) {
+          // Never let a payments-provider outage block completing the trip -
+          // the fare is still recorded, just without a live PaymentIntent to
+          // pay against until an admin/guest retries once Stripe is back.
+          console.error("[payments] failed to create PaymentIntent:", err);
+        }
+      }
+
+      await prisma.tripGuest.update({
+        where: { id: g.id },
+        data: { droppedOff: true, fareAmountCents, paymentStatus, stripePaymentIntentId },
+      });
+    }
+
     const remaining = await prisma.tripGuest.count({ where: { tripId, droppedOff: false } });
-    for (const g of trip.guests.filter((g) => next.tripGuestIds.includes(g.id))) {
+    for (const g of droppedGuests) {
       emitToGuest(g.guestId, "trip:dropped", { tripId });
     }
 
@@ -94,10 +161,18 @@ export async function advanceTripStop(tripId: string, driverId: string) {
       const breakSeconds = event?.breakSecondsAfterTrip ?? ENGINE_CONFIG.DEFAULT_BREAK_SECONDS;
       const freeAt = new Date(now.getTime() + breakSeconds * 1000);
       await prisma.$transaction([
-        prisma.trip.update({ where: { id: tripId }, data: { status: "COMPLETED", completedAt: now } }),
+        prisma.trip.update({
+          where: { id: tripId },
+          data: { status: "COMPLETED", completedAt: now, currentStopArrivedAt: null, totalHaltSeconds },
+        }),
         prisma.driver.update({ where: { id: driverId }, data: { status: "ON_BREAK", freeAt } }),
       ]);
       emitDispatchEvent("trip:completed", { tripId, driverId });
+    } else {
+      await prisma.trip.update({
+        where: { id: tripId },
+        data: { status: "IN_PROGRESS", currentStopArrivedAt: null, totalHaltSeconds },
+      });
     }
   }
 }
@@ -137,4 +212,5 @@ export async function adminOverrideAssign(tripId: string, driverId: string, note
     prisma.driver.update({ where: { id: driverId }, data: { status: "ASSIGNED" } }),
   ]);
   emitDispatchEvent("trip:admin-override", { tripId, driverId });
+  emitToDriver(driverId, "trip:assigned", { tripId });
 }

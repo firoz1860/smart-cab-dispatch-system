@@ -199,6 +199,17 @@
   padding-bottom: 10px;
 }
 
+.trip-payment-row {
+  margin-top: 6px;
+}
+
+.trip-payment-form {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .stacked-form {
   display: flex;
   flex-direction: column;

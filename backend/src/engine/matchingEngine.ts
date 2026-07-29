@@ -5,8 +5,9 @@ import { splitOversizedTrips } from "./splitting";
 import { computePriorityScore } from "./priority";
 import { getNextStop } from "./stops";
 import { ENGINE_CONFIG } from "./config";
+import { DRIVER_ACTIVE_TRIP_STATUSES } from "../lib/constants";
 import type { Driver, Trip, TripGuest } from "@prisma/client";
-import { emitDispatchEvent } from "../realtime/socket";
+import { emitDispatchEvent, emitToDriver } from "../realtime/socket";
 
 async function getEventConfig() {
   const event = await prisma.event.findFirst();
@@ -34,7 +35,7 @@ export async function recomputeLiveEtas(now: Date = new Date()): Promise<void> {
   const { breakSeconds } = await getEventConfig();
 
   const activeTrips = await prisma.trip.findMany({
-    where: { status: { in: ["ASSIGNED", "EN_ROUTE_PICKUP", "ARRIVED_PICKUP", "IN_PROGRESS"] } },
+    where: { status: { in: DRIVER_ACTIVE_TRIP_STATUSES } },
     include: { guests: true, driver: true },
   });
 
@@ -77,20 +78,30 @@ async function assignDriverToTrip(trip: Trip, driver: Driver, now: Date) {
     prisma.driver.update({ where: { id: driver.id }, data: { status: "ASSIGNED" } }),
   ]);
   emitDispatchEvent("trip:assigned", { tripId: trip.id, driverId: driver.id });
+  emitToDriver(driver.id, "trip:assigned", { tripId: trip.id });
 }
 
 /**
  * Nearest-driver batch assignment over every currently QUEUED trip (post
  * clustering/splitting) and every currently AVAILABLE driver: each trip is
- * assigned to whichever feasible (capacity-permitting) driver has the
- * shortest ETA to the pickup point, using the distance provider's road-aware
- * ETA (Google Distance Matrix, or the Haversine + traffic-simulation
- * fallback) as the "shortest path" cost.
+ * assigned to a feasible (capacity-permitting) nearby driver, using the
+ * distance provider's road-aware ETA (Google Distance Matrix, or the
+ * Haversine + traffic-simulation fallback) as the "shortest path" cost.
  *
  * Trips are processed most-urgent-first (by wait time / deadline) so a
  * driver isn't claimed by a nearer-but-lower-priority trip before a
- * longer-waiting guest gets a turn; within that order, the nearest available
- * driver always wins.
+ * longer-waiting guest gets a turn.
+ *
+ * Driver choice within a trip is nearest-first, but not *purely* nearest:
+ * among feasible drivers within CAPACITY_FIT_ETA_CEILING_SECONDS (or the
+ * single nearest driver's ETA, whichever is greater), the best-fitting
+ * (smallest sufficient) vehicle wins, tie-broken by ETA. Without this, a
+ * nearby 10-seat van can get wastefully assigned to a 1-seat trip while a
+ * comparably-close 4-seat sedan sits idle, leaving a later 6-seat group with
+ * no capable vehicle left even though the van was free moments earlier. The
+ * ceiling ensures this preference never forces a guest to wait past a
+ * reasonable ETA just for a "perfect" vehicle size - past that ceiling, the
+ * nearest feasible driver wins outright regardless of fit.
  */
 export async function runBatchAssignment(now: Date = new Date()): Promise<{
   assigned: number;
@@ -120,24 +131,36 @@ export async function runBatchAssignment(now: Date = new Date()): Promise<{
 
   for (let tripIdx = 0; tripIdx < orderedTrips.length; tripIdx++) {
     const trip = orderedTrips[tripIdx];
-    let nearestDriverIdx = -1;
-    let nearestEtaSeconds = Infinity;
 
+    const feasible: { driverIdx: number; etaSeconds: number }[] = [];
     for (const driverIdx of availableDriverIdx) {
       const driver = drivers[driverIdx];
       const capacityOk = trip.totalSeats <= driver.seatCapacity && trip.totalLuggage <= driver.luggageCapacity;
       if (!capacityOk) continue;
-      const eta = etaMatrix[driverIdx][tripIdx].durationSeconds;
-      if (eta < nearestEtaSeconds) {
-        nearestEtaSeconds = eta;
-        nearestDriverIdx = driverIdx;
+      feasible.push({ driverIdx, etaSeconds: etaMatrix[driverIdx][tripIdx].durationSeconds });
+    }
+    if (feasible.length === 0) continue;
+
+    const nearestEtaSeconds = Math.min(...feasible.map((f) => f.etaSeconds));
+    const ceiling = Math.max(nearestEtaSeconds, ENGINE_CONFIG.CAPACITY_FIT_ETA_CEILING_SECONDS);
+
+    let bestDriverIdx = -1;
+    let bestCapacity = Infinity;
+    let bestEtaSeconds = Infinity;
+    for (const { driverIdx, etaSeconds } of feasible) {
+      if (etaSeconds > ceiling) continue; // too far to justify waiting for, regardless of fit
+      const capacity = drivers[driverIdx].seatCapacity;
+      if (capacity < bestCapacity || (capacity === bestCapacity && etaSeconds < bestEtaSeconds)) {
+        bestCapacity = capacity;
+        bestEtaSeconds = etaSeconds;
+        bestDriverIdx = driverIdx;
       }
     }
 
-    if (nearestDriverIdx === -1) continue;
+    if (bestDriverIdx === -1) continue;
 
-    await assignDriverToTrip(trip, drivers[nearestDriverIdx], now);
-    availableDriverIdx.delete(nearestDriverIdx);
+    await assignDriverToTrip(trip, drivers[bestDriverIdx], now);
+    availableDriverIdx.delete(bestDriverIdx);
     assigned += 1;
   }
 
@@ -161,7 +184,7 @@ export async function tryDetourInsertion(tripId: string, now: Date = new Date())
 
   const candidates = await prisma.driver.findMany({
     where: { status: { in: ["EN_ROUTE_PICKUP", "ON_TRIP"] } },
-    include: { trips: { where: { status: { in: ["EN_ROUTE_PICKUP", "ARRIVED_PICKUP", "IN_PROGRESS"] } }, include: { guests: true } } },
+    include: { trips: { where: { status: { in: DRIVER_ACTIVE_TRIP_STATUSES } }, include: { guests: true } } },
   });
 
   let best: { driver: Driver; activeTrip: Trip & { guests: TripGuest[] }; addedSeconds: number } | null = null;

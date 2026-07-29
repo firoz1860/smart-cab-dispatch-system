@@ -23,7 +23,7 @@ function scheduledTimeLabel(type: string): string {
   return "Scheduled pickup";
 }
 
-function StatusLabel({ status }: { status: string }) {
+function GuestStatusLabel({ status }: { status: string }) {
   const labels: Record<string, string> = {
     PENDING_APPROVAL: "Waiting for admin approval",
     QUEUED: "Finding you a driver...",
@@ -39,7 +39,7 @@ function StatusLabel({ status }: { status: string }) {
   return <span className="status-pill">{labels[status] ?? status}</span>;
 }
 
-export function Dashboard() {
+export function GuestDashboard() {
   const { session, logout } = useAuth();
   const [guest, setGuest] = useState<Guest | null>(null);
   const [trips, setTrips] = useState<Trip[]>([]);
@@ -72,7 +72,7 @@ export function Dashboard() {
     requestNotificationPermission();
     const interval = setInterval(refresh, 5000);
     if (session) {
-      const socket = getSocket(session.token);
+      const socket = getSocket();
       socket.on("trip:matched", () => {
         setNotification("You've been matched with a driver! Check your ride details below.");
         notify("Driver matched", "You've been matched with a driver - check your ride details.");
@@ -128,7 +128,7 @@ export function Dashboard() {
   const past = trips.filter((t) => ["COMPLETED", "DECLINED"].includes(t.status));
 
   return (
-    <div className="app-shell">
+    <div className="app-shell guest-app-shell">
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark">🚕</span>
@@ -166,7 +166,7 @@ export function Dashboard() {
               <p className="muted">
                 {TRIP_TYPE_LABELS[currentTrip.trip.type] ?? currentTrip.trip.type} · {currentTrip.trip.pickupLabel} → {currentTrip.trip.dropLabel}
               </p>
-              <StatusLabel status={currentTrip.trip.status} />
+              <GuestStatusLabel status={currentTrip.trip.status} />
               {currentTrip.driver && (
                 <div className="driver-info">
                   <p><strong>{currentTrip.driver.name}</strong> · {currentTrip.driver.vehicleNumber}</p>
@@ -203,7 +203,7 @@ export function Dashboard() {
               <p className="muted">You already have a request in progress — see below.</p>
             )}
             {showRequestForm && (
-              <RequestForm
+              <GuestRequestForm
                 places={places}
                 onCancel={() => setShowRequestForm(false)}
                 onSubmitted={() => {
@@ -222,7 +222,7 @@ export function Dashboard() {
                 <li key={t.id}>
                   <div className="muted">{TRIP_TYPE_LABELS[t.type] ?? t.type}</div>
                   <div>{t.pickupLabel} → {t.dropLabel}</div>
-                  <StatusLabel status={t.status} />
+                  <GuestStatusLabel status={t.status} />
                   {t.scheduledTime && (
                     <div className="muted">{scheduledTimeLabel(t.type)}: {new Date(t.scheduledTime).toLocaleString()}</div>
                   )}
@@ -241,7 +241,7 @@ export function Dashboard() {
                     <li key={t.id}>
                       <div className="muted">{TRIP_TYPE_LABELS[t.type] ?? t.type}</div>
                       <div>{t.pickupLabel} → {t.dropLabel}</div>
-                      <StatusLabel status={t.status} />
+                      <GuestStatusLabel status={t.status} />
                       {t.myFareAmountCents != null && (
                         <div className="row-between trip-payment-row">
                           <span>
@@ -281,7 +281,7 @@ export function Dashboard() {
   );
 }
 
-function RequestForm({
+function GuestRequestForm({
   places,
   onCancel,
   onSubmitted,

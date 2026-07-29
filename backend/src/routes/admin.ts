@@ -313,6 +313,51 @@ adminRouter.post("/dispatch/tick", async (_req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Payments -----------------------------------------------------------------
+// Guest-facing charges only; driver "earnings" here are an internal ledger,
+// not a real bank transfer - see docs/DESIGN.md "Payments" for the boundary
+// (actual driver payouts would need Stripe Connect + per-driver onboarding).
+
+adminRouter.get("/payments", async (_req, res) => {
+  const tripGuests = await prisma.tripGuest.findMany({
+    where: { fareAmountCents: { not: null } },
+    include: { guest: true, trip: { include: { driver: true } } },
+    orderBy: [{ paidAt: "desc" }, { id: "desc" }],
+    take: 300,
+  });
+
+  let totalRevenueCents = 0;
+  let totalPendingCents = 0;
+  for (const tg of tripGuests) {
+    const amount = tg.fareAmountCents ?? 0;
+    if (tg.paymentStatus === "PAID") totalRevenueCents += amount;
+    else if (tg.paymentStatus === "PENDING" || tg.paymentStatus === "UNPAID") totalPendingCents += amount;
+  }
+
+  const driverEarnings = await prisma.driver.findMany({
+    where: { totalEarningsCents: { gt: 0 } },
+    orderBy: { totalEarningsCents: "desc" },
+    select: { id: true, name: true, vehicleNumber: true, totalEarningsCents: true },
+  });
+
+  res.json({
+    payments: tripGuests.map((tg) => ({
+      id: tg.id,
+      tripId: tg.tripId,
+      guestName: tg.guest.name,
+      driverName: tg.trip.driver?.name ?? null,
+      pickupLabel: tg.stopPickupLabel ?? tg.trip.pickupLabel,
+      dropLabel: tg.stopDropLabel ?? tg.trip.dropLabel,
+      fareAmountCents: tg.fareAmountCents,
+      paymentStatus: tg.paymentStatus,
+      paidAt: tg.paidAt,
+    })),
+    totalRevenueCents,
+    totalPendingCents,
+    driverEarnings,
+  });
+});
+
 // ---- Event config -----------------------------------------------------------
 
 adminRouter.get("/event", async (_req, res) => {

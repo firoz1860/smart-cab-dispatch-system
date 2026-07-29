@@ -116,6 +116,12 @@ export class HaversineDistanceProvider implements DistanceProvider {
   }
 }
 
+/** Separate cache (same 5-minute time-bucket scheme as the Haversine provider)
+ * so repeated queries for the same pair - e.g. a driver's GPS watchPosition
+ * firing every few seconds, or consecutive 15s dispatch ticks where most of
+ * the fleet hasn't moved - don't re-hit the paid Google API each time. */
+const googleCache = new Map<string, EtaResult>();
+
 export class GoogleDistanceMatrixProvider implements DistanceProvider {
   private fallback = new HaversineDistanceProvider();
   constructor(private apiKey: string) {}
@@ -130,6 +136,12 @@ export class GoogleDistanceMatrixProvider implements DistanceProvider {
     dests: LatLng[],
     atTime: Date = new Date()
   ): Promise<EtaResult[][]> {
+    const keys = origins.map((o) => dests.map((d) => pairKey(o, d, atTime)));
+    const allCached = keys.every((row) => row.every((k) => googleCache.has(k)));
+    if (allCached) {
+      return keys.map((row) => row.map((k) => googleCache.get(k) as EtaResult));
+    }
+
     try {
       const originsParam = origins.map((o) => `${o.lat},${o.lng}`).join("|");
       const destsParam = dests.map((d) => `${d.lat},${d.lng}`).join("|");
@@ -143,17 +155,25 @@ export class GoogleDistanceMatrixProvider implements DistanceProvider {
       const data: any = await res.json();
       if (data.status !== "OK") throw new Error(`Distance Matrix API status ${data.status}`);
 
-      return data.rows.map((row: any) =>
-        row.elements.map((el: any) => {
-          if (el.status !== "OK") {
-            // Element-level failure (e.g. no route) - fall back for that pair.
-            return null;
-          }
-          return {
-            distanceMeters: el.distance.value,
-            durationSeconds: (el.duration_in_traffic ?? el.duration).value,
-          } as EtaResult;
-        })
+      return Promise.all(
+        data.rows.map((row: any, i: number) =>
+          Promise.all(
+            row.elements.map(async (el: any, j: number): Promise<EtaResult> => {
+              if (el.status !== "OK") {
+                // Element-level failure (e.g. no route between this specific
+                // pair) - fall back to Haversine for just this pair rather
+                // than failing the whole matrix.
+                return this.fallback.getEta(origins[i], dests[j], atTime);
+              }
+              const result: EtaResult = {
+                distanceMeters: el.distance.value,
+                durationSeconds: (el.duration_in_traffic ?? el.duration).value,
+              };
+              googleCache.set(keys[i][j], result);
+              return result;
+            })
+          )
+        )
       );
     } catch (err) {
       // Graceful degradation: never let a maps outage take down dispatch.

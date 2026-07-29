@@ -185,23 +185,74 @@ deliberate simplification versus a full turn-by-turn multi-stop optimizer
 insertion order) — reasonable at event-shuttle scale (typically 2-4 stops per
 shared ride) but the first thing to revisit for larger shared vans.
 
-## 9. Role separation (RBAC)
+## 9. Payments
+
+Guests are charged a fare when dropped off, computed per-guest (not
+per-Trip) since a shared/clustered ride splits into separate charges per
+booking party (`backend/src/lib/fare.ts`: a flat base fare + per-km rate on
+the same Haversine+road-windiness distance model used for ETAs, applied to
+each guest's own pickup/drop pair, not multiplied by seats within their
+party). `completeStop` (`tripActions.ts`) computes the fare and creates a
+Stripe PaymentIntent the moment a guest's own drop-off is confirmed —
+independent of whether the rest of a shared ride has finished.
+
+Stripe is optional (`STRIPE_SECRET_KEY` unset → fares still compute and
+display everywhere, `paymentStatus` just stays `UNPAID` with no PaymentIntent
+to pay against), following the same "optional third-party API, deterministic
+fallback" pattern already used for the maps/routing provider (§7).
+
+Payment confirmation is **webhook-driven** (`POST /webhooks/stripe`,
+`routes/stripeWebhook.ts`), not a client-side "it said success" callback —
+a closed tab or dropped connection must never leave a real charge
+unrecorded. The webhook route is mounted with `express.raw()` *before* the
+global `express.json()` in `server.ts`, since Stripe's signature
+verification needs the exact raw request bytes. On `payment_intent.succeeded`
+it marks the `TripGuest` `PAID` and credits `DRIVER_FARE_SHARE` (80%) of the
+fare to `Driver.totalEarningsCents`.
+
+**Scope boundary:** `Driver.totalEarningsCents` is an internal ledger, not a
+real bank transfer. Actually paying a driver would need each driver to
+complete Stripe Connect onboarding (identity verification, bank details) and
+the platform to issue Connect transfers — a materially larger integration
+than a single private event's fleet needs by default, so it's deliberately
+not built. The admin Payments tab and the driver's own earnings figure are
+both honest about being "money owed," not "money sent."
+
+## 10. Role separation (RBAC)
 
 A single `User` table (`role: ADMIN | DRIVER | GUEST`) backs all three login
-surfaces. JWTs carry `{ userId, role, driverId?, guestId? }`.
-`requireAuth` + `requireRole(...)` middleware gate every route; there is no
-route that serves both Admin and Driver data — `/admin/*` requires `ADMIN`,
-`/driver/*` requires `DRIVER` and every query is scoped to `req.auth.driverId`
-(never a driver ID from the request body/params), so a Driver-role token
-structurally cannot fetch another driver's trip or the operational dashboard.
-This was verified with negative tests (guest token → 403 on both `/admin/*`
-and `/driver/*`; no token → 401).
+surfaces, and a single frontend (`admin-portal`) serves all three - one
+sign-in page, routed post-login purely by the session's role
+(`App.tsx`'s `RoleGate`). This is a UI convenience only, not the security
+boundary: the actual enforcement is entirely server-side and would hold even
+if a completely different, malicious frontend called the API directly.
 
-Socket.IO uses the same JWT for its handshake and room-based fan-out:
-`role:admin` receives all dispatch events, `driver:<id>` and `guest:<id>`
-rooms receive only events addressed to that specific driver/guest.
+The JWT (`{ userId, role, driverId?, guestId? }`) lives in an `httpOnly`
+cookie (`backend/src/middleware/auth.ts`), not in localStorage or a
+JS-readable response field - client-side JavaScript, including anything an
+XSS payload could run, has no way to read or exfiltrate it. `requireAuth` +
+`requireRole(...)` middleware gate every route; there is no route that
+serves both Admin and Driver data — `/admin/*` requires `ADMIN`, `/driver/*`
+requires `DRIVER` and every query is scoped to `req.auth.driverId` (never a
+driver ID from the request body/params), so a Driver-role session
+structurally cannot fetch another driver's trip or the operational
+dashboard. This was verified with negative tests (guest session → 403 on
+both `/admin/*` and `/driver/*`; no session → 401) and confirmed live via
+direct API calls with cookie jars for all three roles from the same origin.
 
-## 10. Notable trade-offs / known simplifications
+`/auth/login` is additionally rate-limited (20/15min per IP) with a
+per-phone lockout (5 failures → 15min lockout) to resist brute-forcing, and
+always performs a `bcrypt.compare` (against a dummy hash when the phone
+doesn't exist) so response timing can't be used to enumerate registered
+phone numbers.
+
+Socket.IO authenticates off the same httpOnly cookie (read from the
+handshake's raw `Cookie` header, since `withCredentials` makes the browser
+attach it automatically) for its room-based fan-out: `role:admin` receives
+all dispatch events, `driver:<id>` and `guest:<id>` rooms receive only events
+addressed to that specific driver/guest.
+
+## 11. Notable trade-offs / known simplifications
 
 - **No geocoding/address search** — pickup/drop points are chosen from a
   fixed `Place` list (venue, accommodations, airport, station) seeded by

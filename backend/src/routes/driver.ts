@@ -2,11 +2,12 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { requireAuth, requireRole } from "../middleware/auth";
-import { acceptTrip, rejectTrip, advanceTripStop, TripActionError } from "../engine/tripActions";
+import { acceptTrip, rejectTrip, arriveAtStop, completeStop, TripActionError } from "../engine/tripActions";
 import { getNextStop, allStopsForDisplay } from "../engine/stops";
 import { runDispatchTick } from "../engine/matchingEngine";
 import { getDistanceProvider } from "../lib/distanceProvider";
 import { emitDispatchEvent, emitToGuest } from "../realtime/socket";
+import { DRIVER_ACTIVE_TRIP_STATUSES } from "../lib/constants";
 
 export const driverRouter = Router();
 driverRouter.use(requireAuth, requireRole("DRIVER"));
@@ -51,7 +52,7 @@ driverRouter.post("/location", async (req, res) => {
   });
 
   const trip = await prisma.trip.findFirst({
-    where: { driverId: id, status: { in: ["ASSIGNED", "EN_ROUTE_PICKUP", "ARRIVED_PICKUP", "IN_PROGRESS"] } },
+    where: { driverId: id, status: { in: DRIVER_ACTIVE_TRIP_STATUSES } },
     include: { guests: true },
   });
 
@@ -82,7 +83,7 @@ driverRouter.get("/trip", async (req, res) => {
   const trip = await prisma.trip.findFirst({
     where: {
       driverId: driverId(req),
-      status: { in: ["ASSIGNED", "EN_ROUTE_PICKUP", "ARRIVED_PICKUP", "IN_PROGRESS"] },
+      status: { in: DRIVER_ACTIVE_TRIP_STATUSES },
     },
     include: { guests: { include: { guest: true } } },
     orderBy: { assignedAt: "desc" },
@@ -112,9 +113,19 @@ driverRouter.post("/trip/:id/reject", async (req, res) => {
   }
 });
 
+driverRouter.post("/trip/:id/arrive", async (req, res) => {
+  try {
+    await arriveAtStop(req.params.id, driverId(req));
+    res.json({ ok: true });
+  } catch (err) {
+    if (err instanceof TripActionError) return res.status(400).json({ error: err.message });
+    throw err;
+  }
+});
+
 driverRouter.post("/trip/:id/advance", async (req, res) => {
   try {
-    await advanceTripStop(req.params.id, driverId(req));
+    await completeStop(req.params.id, driverId(req));
     void runDispatchTick();
     res.json({ ok: true });
   } catch (err) {

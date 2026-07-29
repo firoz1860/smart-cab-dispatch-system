@@ -60,6 +60,10 @@ model Driver {
   lastUpdatedAt   DateTime  @default(now())
   createdAt       DateTime  @default(now())
 
+  // Ledger total (not a real bank transfer - see docs/DESIGN.md "Payments").
+  // Incremented by this driver's share whenever a TripGuest payment succeeds.
+  totalEarningsCents Int @default(0)
+
   user  User?
   trips Trip[]
 
@@ -102,6 +106,12 @@ model Trip {
   pickedUpAt    DateTime?
   completedAt   DateTime?
 
+  // Set when the driver marks "arrived" at the current stop (ARRIVED_PICKUP /
+  // ARRIVED_DROP), cleared once that stop is completed (guest boarded/dropped).
+  // The gap between the two is that stop's halt time, folded into totalHaltSeconds.
+  currentStopArrivedAt DateTime?
+  totalHaltSeconds     Int       @default(0)
+
   totalSeats   Int @default(0)
   totalLuggage Int @default(0)
 
@@ -143,6 +153,14 @@ model TripGuest {
   stopDropLabel   String?
   stopDropLat     Float?
   stopDropLng     Float?
+
+  // Fare is per-guest (party), not per-Trip, since a shared ride splits into
+  // separate charges per booking. Computed and a Stripe PaymentIntent created
+  // when this guest is dropped off; see backend/src/lib/fare.ts.
+  fareAmountCents       Int?
+  paymentStatus         String    @default("UNPAID") // PaymentStatus
+  stripePaymentIntentId String?
+  paidAt                DateTime?
 
   trip  Trip  @relation(fields: [tripId], references: [id])
   guest Guest @relation(fields: [guestId], references: [id])

@@ -8,17 +8,17 @@ export class ApiError extends Error {
   }
 }
 
-function getToken(): string | null {
-  return localStorage.getItem("scds_token");
-}
-
+// The session lives in an httpOnly cookie (see backend/src/middleware/auth.ts)
+// so the frontend never handles the JWT directly - there's no token to read
+// or attach here. `credentials: "include"` is what makes the browser send
+// that cookie on cross-origin requests (the frontend and API run on
+// different ports in dev).
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = getToken();
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers ?? {}),
     },
   });

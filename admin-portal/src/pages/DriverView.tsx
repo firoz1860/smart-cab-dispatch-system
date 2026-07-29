@@ -1,7 +1,11 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { api, ApiError } from "../api/client";
+import { getSocket } from "../api/socket";
 import { useAuth } from "../auth/AuthContext";
 import { MapView } from "../components/MapView";
+import { formatDuration, formatCents } from "../lib/format";
+import { useLiveCountdown } from "../lib/useLiveCountdown";
+import { requestNotificationPermission, notify } from "../lib/pushNotify";
 import type { Driver, Trip } from "../types";
 
 interface Stop {
@@ -42,19 +46,25 @@ export function DriverView() {
 
   useEffect(() => {
     refresh();
+    requestNotificationPermission();
     const interval = setInterval(refresh, 5000);
+    if (session) {
+      const socket = getSocket();
+      socket.on("trip:assigned", () => {
+        notify("New trip assigned", "Open the app to review pickup details.");
+        refresh();
+      });
+      return () => {
+        clearInterval(interval);
+        socket.off("trip:assigned");
+      };
+    }
     return () => clearInterval(interval);
-  }, [refresh]);
+  }, [refresh, session]);
 
-  async function goOnline() {
-    await api.post("/driver/status", { status: "AVAILABLE" });
-    refresh();
-  }
-  async function goOffline() {
-    stopSharing();
-    await api.post("/driver/status", { status: "OFFLINE" });
-    refresh();
-  }
+  const trip = tripData?.trip;
+  const next = tripData?.nextStop;
+  const liveEta = useLiveCountdown(trip?.etaSeconds ?? null);
 
   function startSharing() {
     if (!navigator.geolocation) {
@@ -76,6 +86,27 @@ export function DriverView() {
     setSharing(false);
   }
 
+  // Location is shared continuously for the entire duration of a trip,
+  // automatically - not left to the driver to remember to toggle on, and not
+  // stoppable mid-trip.
+  useEffect(() => {
+    if (trip && watchIdRef.current === null) {
+      startSharing();
+    } else if (!trip && watchIdRef.current !== null) {
+      stopSharing();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trip?.id]);
+
+  async function goOnline() {
+    await api.post("/driver/status", { status: "AVAILABLE" });
+    refresh();
+  }
+  async function goOffline() {
+    await api.post("/driver/status", { status: "OFFLINE" });
+    refresh();
+  }
+
   async function accept(tripId: string) {
     await api.post(`/driver/trip/${tripId}/accept`);
     refresh();
@@ -85,13 +116,24 @@ export function DriverView() {
     await api.post(`/driver/trip/${tripId}/reject`);
     refresh();
   }
+  async function arrive(tripId: string) {
+    try {
+      await api.post(`/driver/trip/${tripId}/arrive`);
+      refresh();
+    } catch (err) {
+      if (err instanceof ApiError) setError(err.message);
+    }
+  }
   async function advance(tripId: string) {
-    await api.post(`/driver/trip/${tripId}/advance`);
-    refresh();
+    try {
+      await api.post(`/driver/trip/${tripId}/advance`);
+      refresh();
+    } catch (err) {
+      if (err instanceof ApiError) setError(err.message);
+    }
   }
 
-  const trip = tripData?.trip;
-  const next = tripData?.nextStop;
+  const guestNames = trip?.guests.map((g) => g.guest?.name).filter(Boolean).join(", ");
 
   return (
     <div className="app-shell">
@@ -113,6 +155,7 @@ export function DriverView() {
 
       <div className="card">
         <h3>Your status: {me?.status}</h3>
+        <p className="muted">Total earnings: <strong>{formatCents(me?.totalEarningsCents ?? 0)}</strong></p>
         <div className="button-row">
           {me?.status === "OFFLINE" ? (
             <button onClick={goOnline}>Go online</button>
@@ -121,11 +164,7 @@ export function DriverView() {
               Go offline
             </button>
           )}
-          {!sharing ? (
-            <button onClick={startSharing}>Start sharing live location</button>
-          ) : (
-            <button className="danger" onClick={stopSharing}>Stop sharing location</button>
-          )}
+          {sharing && <span className="muted">📍 Sharing live location</span>}
         </div>
         {me?.status === "ON_BREAK" && <p className="muted">On mandatory rest break until {me.freeAt ? new Date(me.freeAt).toLocaleTimeString() : "—"}.</p>}
       </div>
@@ -141,6 +180,9 @@ export function DriverView() {
           <div className="card">
             <h3>Current trip — {trip.status.replace(/_/g, " ")}</h3>
             <p><strong>{trip.totalSeats}</strong> guest seat(s), <strong>{trip.totalLuggage}</strong> bag(s)</p>
+            {guestNames && <p className="muted">Guest(s): {guestNames}</p>}
+            <p className="muted">Destination: {trip.dropLabel}</p>
+            {liveEta != null && <p><strong>ETA:</strong> ~{formatDuration(liveEta)}</p>}
             {next && (
               <div className="next-stop">
                 <span className="badge" style={{ background: next.phase === "pickup" ? "#c9820a" : "#2563eb" }}>
@@ -164,10 +206,17 @@ export function DriverView() {
                   <button className="danger" onClick={() => reject(trip.id)}>Reject</button>
                 </>
               )}
-              {trip.status !== "ASSIGNED" && next && (
-                <button onClick={() => advance(trip.id)}>
-                  {next.phase === "pickup" ? "Mark arrived & guest boarded" : "Mark arrived & guest dropped"}
-                </button>
+              {trip.status === "EN_ROUTE_PICKUP" && (
+                <button onClick={() => arrive(trip.id)}>Mark arrived at pickup</button>
+              )}
+              {trip.status === "ARRIVED_PICKUP" && (
+                <button onClick={() => advance(trip.id)}>Confirm guest boarded</button>
+              )}
+              {trip.status === "IN_PROGRESS" && (
+                <button onClick={() => arrive(trip.id)}>Mark arrived at drop-off</button>
+              )}
+              {trip.status === "ARRIVED_DROP" && (
+                <button onClick={() => advance(trip.id)}>Confirm guest dropped</button>
               )}
             </div>
           </div>

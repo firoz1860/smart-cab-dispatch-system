@@ -32,6 +32,7 @@ export const TRIP_STATUSES = [
   "EN_ROUTE_PICKUP",
   "ARRIVED_PICKUP",
   "IN_PROGRESS",
+  "ARRIVED_DROP",
   "COMPLETED",
   "CANCELLED",
   "UNASSIGNABLE",
@@ -48,8 +49,28 @@ export const ACTIVE_TRIP_STATUSES: TripStatus[] = [
   "EN_ROUTE_PICKUP",
   "ARRIVED_PICKUP",
   "IN_PROGRESS",
+  "ARRIVED_DROP",
 ];
 
 // Statuses that mean a guest already has a pending or active ride and
 // shouldn't be allowed to raise another on-demand request until it resolves.
 export const GUEST_BLOCKING_TRIP_STATUSES: TripStatus[] = ["PENDING_APPROVAL", ...ACTIVE_TRIP_STATUSES];
+
+// Trip statuses where a driver has been assigned and is actively working the
+// trip (as opposed to QUEUED, which is active but has no driver yet).
+export const DRIVER_ACTIVE_TRIP_STATUSES: TripStatus[] = [
+  "ASSIGNED",
+  "EN_ROUTE_PICKUP",
+  "ARRIVED_PICKUP",
+  "IN_PROGRESS",
+  "ARRIVED_DROP",
+];
+
+export const PAYMENT_STATUSES = ["UNPAID", "PENDING", "PAID", "FAILED", "REFUNDED"] as const;
+export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
+
+// The share of each fare that accrues to the driver's earnings ledger; the
+// remainder is the platform/event-organizer fee. A fixed constant here (not
+// per-driver) since this is a private event fleet, not a marketplace with
+// individually negotiated rates.
+export const DRIVER_FARE_SHARE = 0.8;

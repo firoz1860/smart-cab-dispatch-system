@@ -3,11 +3,12 @@ import { api, ApiError } from "../api/client";
 import { getSocket } from "../api/socket";
 import { useAuth } from "../auth/AuthContext";
 import { MapView, type MapMarker } from "../components/MapView";
-import { formatDuration } from "../lib/format";
+import { useToast } from "../components/Toast";
+import { formatDuration, formatCents } from "../lib/format";
 import { useLiveCountdown } from "../lib/useLiveCountdown";
 import type { Driver, Guest, Place, Trip, Event } from "../types";
 
-type Tab = "overview" | "drivers" | "guests" | "requests" | "trips";
+type Tab = "overview" | "drivers" | "guests" | "requests" | "trips" | "payments";
 
 function StatusBadge({ status }: { status: string }) {
   const colorMap: Record<string, string> = {
@@ -15,6 +16,8 @@ function StatusBadge({ status }: { status: string }) {
     OFFLINE: "#888",
     ASSIGNED: "#c9820a",
     EN_ROUTE_PICKUP: "#c9820a",
+    ARRIVED_PICKUP: "#2563eb",
+    ARRIVED_DROP: "#2563eb",
     ON_TRIP: "#2563eb",
     ON_BREAK: "#7c3aed",
     QUEUED: "#c9820a",
@@ -22,6 +25,11 @@ function StatusBadge({ status }: { status: string }) {
     UNASSIGNABLE: "#b91c1c",
     COMPLETED: "#1a9e5c",
     CANCELLED: "#888",
+    PAID: "#1a9e5c",
+    PENDING: "#c9820a",
+    UNPAID: "#888",
+    FAILED: "#b91c1c",
+    REFUNDED: "#7c3aed",
   };
   return (
     <span className="badge" style={{ background: colorMap[status] ?? "#555" }}>
@@ -64,7 +72,7 @@ export function AdminDashboard() {
     refresh();
     const interval = setInterval(refresh, 6000);
     if (session) {
-      const socket = getSocket(session.token);
+      const socket = getSocket();
       const onChange = () => refresh();
       socket.on("trip:assigned", onChange);
       socket.on("trip:accepted", onChange);
@@ -73,6 +81,8 @@ export function AdminDashboard() {
       socket.on("trip:detour-merged", onChange);
       socket.on("trip:unassignable", onChange);
       socket.on("trip:admin-override", onChange);
+      socket.on("trip:arrived-pickup", onChange);
+      socket.on("trip:arrived-drop", onChange);
       const onDriverLocation = (data: { driverId: string; lat: number; lng: number; tripId: string | null; etaSeconds: number | null }) => {
         setDrivers((prev) =>
           prev.map((d) => (d.id === data.driverId ? { ...d, currentLat: data.lat, currentLng: data.lng } : d))
@@ -93,6 +103,8 @@ export function AdminDashboard() {
         socket.off("trip:detour-merged", onChange);
         socket.off("trip:unassignable", onChange);
         socket.off("trip:admin-override", onChange);
+        socket.off("trip:arrived-pickup", onChange);
+        socket.off("trip:arrived-drop", onChange);
         socket.off("driver:location", onDriverLocation);
       };
     }
@@ -130,7 +142,7 @@ export function AdminDashboard() {
       </header>
 
       <nav className="tabbar">
-        {(["overview", "drivers", "guests", "requests", "trips"] as Tab[]).map((t) => (
+        {(["overview", "drivers", "guests", "requests", "trips", "payments"] as Tab[]).map((t) => (
           <button key={t} className={tab === t ? "tab active" : "tab"} onClick={() => setTab(t)}>
             {t === "requests" && requests.length > 0 ? `Requests (${requests.length})` : t[0].toUpperCase() + t.slice(1)}
           </button>
@@ -160,7 +172,10 @@ export function AdminDashboard() {
       {tab === "drivers" && <DriversPanel drivers={drivers} defaultLat={venueCenter[0]} defaultLng={venueCenter[1]} onChanged={refresh} />}
       {tab === "guests" && <GuestsPanel guests={guests} places={places} onChanged={refresh} />}
       {tab === "requests" && <RequestsPanel requests={requests} onChanged={refresh} />}
-      {tab === "trips" && <TripsPanel trips={trips} drivers={drivers} onChanged={refresh} />}
+      {tab === "trips" && (
+        <TripsPanel trips={trips} drivers={drivers} guests={guests} places={places} onChanged={refresh} />
+      )}
+      {tab === "payments" && <PaymentsPanel />}
     </div>
   );
 }
@@ -586,39 +601,98 @@ function TripEtaCell({ etaSeconds }: { etaSeconds: number | null }) {
   return <td>{liveEta != null ? formatDuration(liveEta) : "—"}</td>;
 }
 
-function TripsPanel({ trips, drivers, onChanged }: { trips: Trip[]; drivers: Driver[]; onChanged: () => void }) {
+const TRIP_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: "ARRIVAL", label: "Arrival — airport/station → accommodation" },
+  { value: "TO_VENUE", label: "To venue — accommodation → venue" },
+  { value: "RETURN", label: "Return — venue → accommodation" },
+  { value: "DEPARTURE", label: "Departure — accommodation → airport/station" },
+];
+
+function TripsPanel({
+  trips,
+  drivers,
+  guests,
+  places,
+  onChanged,
+}: {
+  trips: Trip[];
+  drivers: Driver[];
+  guests: Guest[];
+  places: Place[];
+  onChanged: () => void;
+}) {
+  const { showToast } = useToast();
   const [overridingTripId, setOverridingTripId] = useState<string | null>(null);
   const [selectedDriverId, setSelectedDriverId] = useState("");
-  const [overrideError, setOverrideError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [query, setQuery] = useState("");
+
+  const [scheduleForm, setScheduleForm] = useState({
+    guestId: "",
+    type: "ARRIVAL",
+    pickupPlaceId: "",
+    dropPlaceId: "",
+    scheduledTime: "",
+    deadline: "",
+  });
+  const [scheduling, setScheduling] = useState(false);
 
   function startOverride(tripId: string) {
     setOverridingTripId(tripId);
     setSelectedDriverId("");
-    setOverrideError(null);
   }
 
   function cancelOverride() {
     setOverridingTripId(null);
-    setOverrideError(null);
   }
 
   async function confirmOverride() {
     if (!overridingTripId || !selectedDriverId) return;
     setSubmitting(true);
-    setOverrideError(null);
     try {
       await api.post(`/admin/trips/${overridingTripId}/override`, {
         driverId: selectedDriverId,
         note: "Manual admin override",
       });
       setOverridingTripId(null);
+      showToast("Driver assigned successfully.", "success");
       onChanged();
     } catch (err) {
-      if (err instanceof ApiError) setOverrideError(err.message);
+      if (err instanceof ApiError) showToast(err.message, "error");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function scheduleTrip(e: React.FormEvent) {
+    e.preventDefault();
+    const pickup = places.find((p) => p.id === scheduleForm.pickupPlaceId);
+    const drop = places.find((p) => p.id === scheduleForm.dropPlaceId);
+    if (!scheduleForm.guestId || !pickup || !drop) {
+      showToast("Choose a guest, pickup, and drop location.", "error");
+      return;
+    }
+    setScheduling(true);
+    try {
+      await api.post("/admin/trips", {
+        guestId: scheduleForm.guestId,
+        type: scheduleForm.type,
+        pickupLabel: pickup.name,
+        pickupLat: pickup.lat,
+        pickupLng: pickup.lng,
+        dropLabel: drop.name,
+        dropLat: drop.lat,
+        dropLng: drop.lng,
+        scheduledTime: scheduleForm.scheduledTime ? new Date(scheduleForm.scheduledTime).toISOString() : undefined,
+        deadline: scheduleForm.deadline ? new Date(scheduleForm.deadline).toISOString() : undefined,
+      });
+      showToast("Trip scheduled — the dispatch engine will assign a driver automatically.", "success");
+      setScheduleForm({ ...scheduleForm, guestId: "", pickupPlaceId: "", dropPlaceId: "", scheduledTime: "", deadline: "" });
+      onChanged();
+    } catch (err) {
+      if (err instanceof ApiError) showToast(err.message, "error");
+    } finally {
+      setScheduling(false);
     }
   }
 
@@ -635,7 +709,65 @@ function TripsPanel({ trips, drivers, onChanged }: { trips: Trip[]; drivers: Dri
     : trips;
 
   return (
-    <div className="card">
+    <div className="grid-2">
+      <div className="card">
+        <h3>Schedule a trip</h3>
+        <form onSubmit={scheduleTrip} className="stacked-form">
+          <label>
+            Guest
+            <select value={scheduleForm.guestId} onChange={(e) => setScheduleForm({ ...scheduleForm, guestId: e.target.value })} required>
+              <option value="">— choose a guest —</option>
+              {guests.map((g) => (
+                <option key={g.id} value={g.id}>{g.name} · {g.phone} · {g.partySize} pax</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Trip type
+            <select value={scheduleForm.type} onChange={(e) => setScheduleForm({ ...scheduleForm, type: e.target.value })}>
+              {TRIP_TYPE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Pickup
+            <select value={scheduleForm.pickupPlaceId} onChange={(e) => setScheduleForm({ ...scheduleForm, pickupPlaceId: e.target.value })} required>
+              <option value="">— choose a place —</option>
+              {places.map((p) => (
+                <option key={p.id} value={p.id}>{p.name} ({p.type})</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Drop
+            <select value={scheduleForm.dropPlaceId} onChange={(e) => setScheduleForm({ ...scheduleForm, dropPlaceId: e.target.value })} required>
+              <option value="">— choose a place —</option>
+              {places.map((p) => (
+                <option key={p.id} value={p.id}>{p.name} ({p.type})</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Scheduled time (optional)
+            <input
+              type="datetime-local"
+              value={scheduleForm.scheduledTime}
+              onChange={(e) => setScheduleForm({ ...scheduleForm, scheduledTime: e.target.value })}
+            />
+          </label>
+          <label>
+            Deadline (optional)
+            <input
+              type="datetime-local"
+              value={scheduleForm.deadline}
+              onChange={(e) => setScheduleForm({ ...scheduleForm, deadline: e.target.value })}
+            />
+          </label>
+          <button type="submit" disabled={scheduling}>Schedule trip</button>
+        </form>
+      </div>
+      <div className="card">
       <h3>All active trips ({trips.length})</h3>
       <input
         className="search-input"
@@ -686,7 +818,6 @@ function TripsPanel({ trips, drivers, onChanged }: { trips: Trip[]; drivers: Dri
                         Confirm assignment
                       </button>
                     </div>
-                    {overrideError && <div className="error-banner">{overrideError}</div>}
                   </td>
                 </tr>
               )}
@@ -694,6 +825,149 @@ function TripsPanel({ trips, drivers, onChanged }: { trips: Trip[]; drivers: Dri
           ))}
         </tbody>
       </table>
+      </div>
+      </div>
+    </div>
+  );
+}
+
+interface PaymentRow {
+  id: string;
+  tripId: string;
+  guestName: string;
+  driverName: string | null;
+  pickupLabel: string;
+  dropLabel: string;
+  fareAmountCents: number | null;
+  paymentStatus: string;
+  paidAt: string | null;
+}
+
+interface DriverEarningRow {
+  id: string;
+  name: string;
+  vehicleNumber: string;
+  totalEarningsCents: number;
+}
+
+interface PaymentsResponse {
+  payments: PaymentRow[];
+  totalRevenueCents: number;
+  totalPendingCents: number;
+  driverEarnings: DriverEarningRow[];
+}
+
+const PAYMENTS_PAGE_SIZE = 10;
+
+function PaymentsPanel() {
+  const [data, setData] = useState<PaymentsResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+
+  const refresh = useCallback(async () => {
+    try {
+      const res = await api.get<PaymentsResponse>("/admin/payments");
+      setData(res);
+    } catch (err) {
+      if (err instanceof ApiError) setError(err.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const interval = setInterval(refresh, 8000);
+    return () => clearInterval(interval);
+  }, [refresh]);
+
+  function updateQuery(value: string) {
+    setQuery(value);
+    setPage(1);
+  }
+
+  const q = query.trim().toLowerCase();
+  const payments = data?.payments ?? [];
+  const filtered = q
+    ? payments.filter(
+        (p) =>
+          p.guestName.toLowerCase().includes(q) ||
+          (p.driverName ?? "").toLowerCase().includes(q)
+      )
+    : payments;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAYMENTS_PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pagePayments = filtered.slice((currentPage - 1) * PAYMENTS_PAGE_SIZE, currentPage * PAYMENTS_PAGE_SIZE);
+
+  return (
+    <div className="grid-2">
+      <div className="card">
+        <h3>Revenue</h3>
+        {error && <div className="error-banner">{error}</div>}
+        <div className="chip-row">
+          <span className="chip"><strong>Collected:</strong>&nbsp;{formatCents(data?.totalRevenueCents ?? 0)}</span>
+          <span className="chip"><strong>Pending:</strong>&nbsp;{formatCents(data?.totalPendingCents ?? 0)}</span>
+        </div>
+        <p className="muted">
+          Fares are charged to guests via Stripe when they're dropped off. Driver "earnings" below are
+          an internal ledger (80% of each paid fare) - not yet a real bank transfer, since that needs
+          each driver to complete Stripe Connect onboarding (a separate, larger integration).
+        </p>
+        <h4>Driver earnings</h4>
+        <table className="data-table">
+          <thead><tr><th>Driver</th><th>Vehicle</th><th>Earned</th></tr></thead>
+          <tbody>
+            {(data?.driverEarnings ?? []).length === 0 && (
+              <tr><td colSpan={3} className="muted">No completed/paid trips yet.</td></tr>
+            )}
+            {(data?.driverEarnings ?? []).map((d) => (
+              <tr key={d.id}>
+                <td>{d.name}</td>
+                <td>{d.vehicleNumber}</td>
+                <td>{formatCents(d.totalEarningsCents)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="card">
+        <h3>Fares ({filtered.length}{q ? ` of ${payments.length}` : ""})</h3>
+        <input
+          className="search-input"
+          placeholder="Search by guest or driver name..."
+          value={query}
+          onChange={(e) => updateQuery(e.target.value)}
+        />
+        {payments.length === 0 && <p className="muted">No fares recorded yet - fares are generated once a trip's guest is dropped off.</p>}
+        {payments.length > 0 && filtered.length === 0 && <p className="muted">No fares match "{query}".</p>}
+        {filtered.length > 0 && (
+          <div className="table-scroll">
+            <table className="data-table">
+              <thead><tr><th>Guest</th><th>Driver</th><th>Route</th><th>Fare</th><th>Status</th></tr></thead>
+              <tbody>
+                {pagePayments.map((p) => (
+                  <tr key={p.id}>
+                    <td>{p.guestName}</td>
+                    <td>{p.driverName ?? "—"}</td>
+                    <td>{p.pickupLabel} → {p.dropLabel}</td>
+                    <td>{p.fareAmountCents != null ? formatCents(p.fareAmountCents) : "—"}</td>
+                    <td><StatusBadge status={p.paymentStatus} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {filtered.length > PAYMENTS_PAGE_SIZE && (
+          <div className="pagination">
+            <button className="secondary" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1}>
+              Prev
+            </button>
+            <span className="muted">Page {currentPage} of {totalPages}</span>
+            <button className="secondary" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}>
+              Next
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

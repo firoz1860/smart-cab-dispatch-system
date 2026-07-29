@@ -1,6 +1,11 @@
-import { useState } from "react";
+import { useState, lazy, Suspense } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+
+// Pulls in @google/model-viewer (bundles three.js) - deferred to its own
+// chunk so it's only downloaded after a successful sign-in, not on initial
+// load of the login page itself.
+const SignInIntro = lazy(() => import("../components/SignInIntro").then((m) => ({ default: m.SignInIntro })));
 
 export function Login() {
   const { login } = useAuth();
@@ -9,6 +14,7 @@ export function Login() {
   const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showIntro, setShowIntro] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -16,12 +22,19 @@ export function Login() {
     setLoading(true);
     try {
       await login(phone, pin);
-      navigate("/");
+      setShowIntro(true);
     } catch (err: any) {
       setError(err.message ?? "Login failed");
-    } finally {
       setLoading(false);
     }
+  }
+
+  if (showIntro) {
+    return (
+      <Suspense fallback={<div className="signin-intro" />}>
+        <SignInIntro onDone={() => navigate("/")} />
+      </Suspense>
+    );
   }
 
   return (

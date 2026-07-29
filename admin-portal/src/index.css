@@ -86,3 +86,84 @@ a:focus-visible {
   filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.45));
   transition: transform 0.15s linear;
 }
+
+/* Post-login intro: a 3D cab drives across the screen while two panels
+   ("platform doors") slide open to reveal the app underneath. */
+.signin-intro {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.signin-intro-panel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  animation-duration: 3s;
+  animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  animation-fill-mode: forwards;
+  z-index: 1;
+}
+
+.signin-intro-panel-left {
+  left: 0;
+  animation-name: signinPanelOpenLeft;
+}
+
+.signin-intro-panel-right {
+  right: 0;
+  animation-name: signinPanelOpenRight;
+}
+
+.signin-intro-brand {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: white;
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: 0.02em;
+  opacity: 0;
+  animation: signinBrandFade 3s ease forwards;
+  z-index: 1;
+  text-align: center;
+}
+
+.signin-intro-cab {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(320px, 60vw);
+  height: min(320px, 60vw);
+  transform: translate(-50%, -50%) translateX(-160%);
+  animation: signinCabDrive 3s cubic-bezier(0.45, 0, 0.4, 1) forwards;
+  z-index: 2;
+  --poster-color: transparent;
+}
+
+@keyframes signinPanelOpenLeft {
+  0%, 40% { transform: translateX(0); }
+  100% { transform: translateX(-100%); }
+}
+
+@keyframes signinPanelOpenRight {
+  0%, 40% { transform: translateX(0); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes signinCabDrive {
+  0% { transform: translate(-50%, -50%) translateX(-160%); }
+  50% { transform: translate(-50%, -50%) translateX(0); }
+  100% { transform: translate(-50%, -50%) translateX(160%); }
+}
+
+@keyframes signinBrandFade {
+  0%, 15% { opacity: 0; }
+  35%, 65% { opacity: 1; }
+  85%, 100% { opacity: 0; }
+}

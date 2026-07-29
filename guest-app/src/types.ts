@@ -31,6 +31,8 @@ export interface Trip {
   myStopOrder?: number;
   myBoarded?: boolean;
   myDroppedOff?: boolean;
+  myFareAmountCents?: number | null;
+  myPaymentStatus?: string;
 }
 
 export interface Guest {

@@ -1,3 +1,7 @@
+export function formatCents(cents: number): string {
+  return `₹${(cents / 100).toFixed(2)}`;
+}
+
 export function formatDuration(seconds: number): string {
   if (seconds < 60) return "<1 min";
   const totalMinutes = Math.round(seconds / 60);

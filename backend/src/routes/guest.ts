@@ -3,7 +3,8 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { getNextStop } from "../engine/stops";
-import { GUEST_BLOCKING_TRIP_STATUSES } from "../lib/constants";
+import { GUEST_BLOCKING_TRIP_STATUSES, DRIVER_ACTIVE_TRIP_STATUSES } from "../lib/constants";
+import { getStripe } from "../lib/stripeClient";
 
 export const guestRouter = Router();
 guestRouter.use(requireAuth, requireRole("GUEST"));
@@ -28,10 +29,45 @@ guestRouter.get("/trips", async (req, res) => {
     include: { trip: { include: { driver: true } } },
   });
   const trips = tripGuests
-    .map((tg) => ({ ...tg.trip, myStopOrder: tg.stopOrder, myBoarded: tg.boarded, myDroppedOff: tg.droppedOff }))
+    .map((tg) => ({
+      ...tg.trip,
+      myStopOrder: tg.stopOrder,
+      myBoarded: tg.boarded,
+      myDroppedOff: tg.droppedOff,
+      myFareAmountCents: tg.fareAmountCents,
+      myPaymentStatus: tg.paymentStatus,
+    }))
     .filter((t) => t.status !== "CANCELLED")
     .sort((a, b) => b.requestedAt.getTime() - a.requestedAt.getTime());
   res.json(trips);
+});
+
+/** Fetches (or re-fetches) the Stripe PaymentIntent client secret for this
+ * guest's fare on a completed trip, so the frontend can collect payment via
+ * Stripe Elements. The fare/PaymentIntent itself is created when the guest is
+ * dropped off (see backend/src/engine/tripActions.ts completeStop). */
+guestRouter.get("/trips/:tripId/payment", async (req, res) => {
+  const tripGuest = await prisma.tripGuest.findUnique({
+    where: { tripId_guestId: { tripId: req.params.tripId, guestId: guestId(req) } },
+  });
+  if (!tripGuest) return res.status(404).json({ error: "Trip not found" });
+  if (tripGuest.paymentStatus === "PAID") {
+    return res.json({ fareAmountCents: tripGuest.fareAmountCents, paymentStatus: tripGuest.paymentStatus, clientSecret: null });
+  }
+  if (tripGuest.fareAmountCents == null) {
+    return res.status(400).json({ error: "No fare has been calculated for this trip yet" });
+  }
+  const stripe = getStripe();
+  if (!stripe || !tripGuest.stripePaymentIntentId) {
+    return res.status(503).json({ error: "Payments are not configured for this event yet" });
+  }
+
+  const intent = await stripe.paymentIntents.retrieve(tripGuest.stripePaymentIntentId);
+  res.json({
+    clientSecret: intent.client_secret,
+    fareAmountCents: tripGuest.fareAmountCents,
+    paymentStatus: tripGuest.paymentStatus,
+  });
 });
 
 /** The guest's currently active trip (if matched), including driver name,
@@ -40,7 +76,7 @@ guestRouter.get("/current-trip", async (req, res) => {
   const tripGuest = await prisma.tripGuest.findFirst({
     where: {
       guestId: guestId(req),
-      trip: { status: { in: ["ASSIGNED", "EN_ROUTE_PICKUP", "ARRIVED_PICKUP", "IN_PROGRESS"] } },
+      trip: { status: { in: DRIVER_ACTIVE_TRIP_STATUSES } },
     },
     include: { trip: { include: { driver: true, guests: true } } },
   });
