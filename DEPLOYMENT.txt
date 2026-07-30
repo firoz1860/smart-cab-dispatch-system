@@ -272,6 +272,24 @@ PART 4 — GOTCHAS AND LIMITATIONS SPECIFIC TO THIS DEPLOYMENT
     is actually committed to git (`git ls-files backend/package-lock.json`
     should print the path; if it prints nothing, it's not tracked, and
     "npm ci" will fail outright because it requires that file).
+  - Build fails with "Could not find a declaration file for module
+    'express'" (or similarly for 'cookie-parser', or plain implicit-'any'
+    errors on req/res parameters) even though the previous error is fixed —
+    this is NODE_ENV=production (which you set per Step 1.2, and which is
+    required for the cross-domain cookie to work) causing npm to skip
+    devDependencies entirely during install, on Render specifically.
+    Verified directly: running `NODE_ENV=production npm ci` locally
+    installs ~40 fewer packages than a plain `npm ci`, dropping exactly the
+    dev-only tools. The fix already applied in this repo: `typescript`,
+    every `@types/*` package, `prisma`, and `ts-node` all live in
+    package.json's regular "dependencies", not "devDependencies" - anything
+    the build step or a post-deploy `npm run seed` actually needs to run
+    must NOT be a devDependency, on any host that treats
+    NODE_ENV=production this way. Only `ts-node-dev` (local hot-reload
+    only, never invoked in the deployed environment) is still a
+    devDependency. If you add a new devDependency later and the build step
+    or Render Shell needs it, move it to "dependencies" too - don't assume
+    devDependencies are available at all once NODE_ENV=production is set.
   - Free-tier Render instances spin down after ~15 minutes of no traffic
     and take ~30-60s to wake back up on the next request. For a real
     event, use a paid "always-on" instance type — a cold start mid-event
