@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, Fragment } from "react";
+import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { api, ApiError } from "../api/client";
 import { getSocket } from "../api/socket";
 import { useAuth } from "../auth/AuthContext";
@@ -239,6 +239,7 @@ function DriversPanel({
   const [rowBusyId, setRowBusyId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
+  const tableScrollRef = useRef<HTMLDivElement | null>(null);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -265,6 +266,11 @@ function DriversPanel({
       luggageCapacity: d.luggageCapacity,
     });
     setEditError(null);
+    // On a narrow screen the table may be scrolled horizontally to reach the
+    // "Edit" button in the last column - snap back to the left so the edit
+    // form (which spans the full row) is actually visible without the user
+    // having to manually scroll back themselves.
+    tableScrollRef.current?.scrollTo({ left: 0, behavior: "smooth" });
   }
 
   async function saveEdit(id: string) {
@@ -341,18 +347,18 @@ function DriversPanel({
           onChange={(e) => updateQuery(e.target.value)}
         />
         {filteredDrivers.length > 0 && (
-          <div className="table-scroll">
+          <div className="table-scroll" ref={tableScrollRef}>
           <table className="data-table">
             <thead><tr><th>Name</th><th>Vehicle</th><th>Cap.</th><th>Status</th><th></th></tr></thead>
             <tbody>
               {pageDrivers.map((d) => (
                 <Fragment key={d.id}>
                   <tr>
-                    <td>{d.name}<div className="muted">{d.phone}</div></td>
-                    <td>{d.vehicleNumber}</td>
-                    <td>{d.seatCapacity}s / {d.luggageCapacity}l</td>
-                    <td><StatusBadge status={d.status} /></td>
-                    <td>
+                    <td data-label="Name">{d.name}<div className="muted">{d.phone}</div></td>
+                    <td data-label="Vehicle">{d.vehicleNumber}</td>
+                    <td data-label="Cap.">{d.seatCapacity}s / {d.luggageCapacity}l</td>
+                    <td data-label="Status"><StatusBadge status={d.status} /></td>
+                    <td data-label="">
                       {editingId === d.id ? (
                         <button className="secondary" onClick={() => setEditingId(null)}>Cancel</button>
                       ) : (
@@ -485,9 +491,9 @@ function GuestsPanel({ guests, places, onChanged }: { guests: Guest[]; places: P
             <tbody>
               {pageGuests.map((g) => (
                 <tr key={g.id}>
-                  <td>{g.name}<div className="muted">{g.phone}</div></td>
-                  <td>{g.partySize} pax / {g.luggageCount} bags</td>
-                  <td>{g.accommodation?.name ?? "—"}</td>
+                  <td data-label="Name">{g.name}<div className="muted">{g.phone}</div></td>
+                  <td data-label="Party">{g.partySize} pax / {g.luggageCount} bags</td>
+                  <td data-label="Accommodation">{g.accommodation?.name ?? "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -519,10 +525,13 @@ function GuestsPanel({ guests, places, onChanged }: { guests: Guest[]; places: P
   );
 }
 
+const REQUESTS_PAGE_SIZE = 10;
+
 function RequestsPanel({ requests, onChanged }: { requests: Trip[]; onChanged: () => void }) {
   const [query, setQuery] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
 
   async function approve(id: string) {
     setBusyId(id);
@@ -550,6 +559,11 @@ function RequestsPanel({ requests, onChanged }: { requests: Trip[]; onChanged: (
     }
   }
 
+  function updateQuery(value: string) {
+    setQuery(value);
+    setPage(1);
+  }
+
   const q = query.trim().toLowerCase();
   const filtered = q
     ? requests.filter((r) =>
@@ -558,48 +572,66 @@ function RequestsPanel({ requests, onChanged }: { requests: Trip[]; onChanged: (
         )
       )
     : requests;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / REQUESTS_PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageRequests = filtered.slice((currentPage - 1) * REQUESTS_PAGE_SIZE, currentPage * REQUESTS_PAGE_SIZE);
 
   return (
     <div className="card">
-      <h3>On-demand ride requests awaiting approval</h3>
+      <h3>On-demand ride requests awaiting approval ({filtered.length}{q ? ` of ${requests.length}` : ""})</h3>
       <input
         className="search-input"
         placeholder="Search by guest name or phone..."
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={(e) => updateQuery(e.target.value)}
       />
       {actionError && <div className="error-banner">{actionError}</div>}
       {requests.length === 0 && <p className="muted">No pending requests.</p>}
       {requests.length > 0 && filtered.length === 0 && <p className="muted">No requests match "{query}".</p>}
-      <div className="table-scroll">
-      <table className="data-table">
-        <thead><tr><th>Guest</th><th>Pickup</th><th>Drop</th><th>Requested</th><th></th></tr></thead>
-        <tbody>
-          {filtered.map((r) => (
-            <tr key={r.id}>
-              <td>{r.guests.map((g) => g.guest?.name).join(", ")}</td>
-              <td>{r.pickupLabel}</td>
-              <td>{r.dropLabel}</td>
-              <td>{new Date(r.requestedAt).toLocaleTimeString()}</td>
-              <td>
-                <div className="button-row">
-                  <button disabled={busyId === r.id} onClick={() => approve(r.id)}>Approve</button>
-                  <button className="danger" disabled={busyId === r.id} onClick={() => decline(r.id)}>Decline</button>
-                </div>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      </div>
+      {pageRequests.length > 0 && (
+        <div className="table-scroll">
+        <table className="data-table">
+          <thead><tr><th>Guest</th><th>Pickup</th><th>Drop</th><th>Requested</th><th></th></tr></thead>
+          <tbody>
+            {pageRequests.map((r) => (
+              <tr key={r.id}>
+                <td data-label="Guest">{r.guests.map((g) => g.guest?.name).join(", ")}</td>
+                <td data-label="Pickup">{r.pickupLabel}</td>
+                <td data-label="Drop">{r.dropLabel}</td>
+                <td data-label="Requested">{new Date(r.requestedAt).toLocaleTimeString()}</td>
+                <td data-label="">
+                  <div className="button-row">
+                    <button disabled={busyId === r.id} onClick={() => approve(r.id)}>Approve</button>
+                    <button className="danger" disabled={busyId === r.id} onClick={() => decline(r.id)}>Decline</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        </div>
+      )}
+      {filtered.length > REQUESTS_PAGE_SIZE && (
+        <div className="pagination">
+          <button className="secondary" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1}>
+            Prev
+          </button>
+          <span className="muted">Page {currentPage} of {totalPages}</span>
+          <button className="secondary" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}>
+            Next
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
 function TripEtaCell({ etaSeconds }: { etaSeconds: number | null }) {
   const liveEta = useLiveCountdown(etaSeconds);
-  return <td>{liveEta != null ? formatDuration(liveEta) : "—"}</td>;
+  return <td data-label="ETA">{liveEta != null ? formatDuration(liveEta) : "—"}</td>;
 }
+
+const TRIPS_PAGE_SIZE = 10;
 
 const TRIP_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "ARRIVAL", label: "Arrival — airport/station → accommodation" },
@@ -626,6 +658,8 @@ function TripsPanel({
   const [selectedDriverId, setSelectedDriverId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const tableScrollRef = useRef<HTMLDivElement | null>(null);
 
   const [scheduleForm, setScheduleForm] = useState({
     guestId: "",
@@ -640,6 +674,7 @@ function TripsPanel({
   function startOverride(tripId: string) {
     setOverridingTripId(tripId);
     setSelectedDriverId("");
+    tableScrollRef.current?.scrollTo({ left: 0, behavior: "smooth" });
   }
 
   function cancelOverride() {
@@ -696,6 +731,11 @@ function TripsPanel({
     }
   }
 
+  function updateQuery(value: string) {
+    setQuery(value);
+    setPage(1);
+  }
+
   const q = query.trim().toLowerCase();
   const filteredTrips = q
     ? trips.filter(
@@ -707,6 +747,9 @@ function TripsPanel({
           )
       )
     : trips;
+  const totalPages = Math.max(1, Math.ceil(filteredTrips.length / TRIPS_PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageTrips = filteredTrips.slice((currentPage - 1) * TRIPS_PAGE_SIZE, currentPage * TRIPS_PAGE_SIZE);
 
   return (
     <div className="grid-2">
@@ -768,28 +811,29 @@ function TripsPanel({
         </form>
       </div>
       <div className="card">
-      <h3>All active trips ({trips.length})</h3>
+      <h3>All active trips ({filteredTrips.length}{q ? ` of ${trips.length}` : ""})</h3>
       <input
         className="search-input"
         placeholder="Search by driver name, vehicle number, or guest name/phone..."
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={(e) => updateQuery(e.target.value)}
       />
       {trips.length > 0 && filteredTrips.length === 0 && <p className="muted">No trips match "{query}".</p>}
-      <div className="table-scroll">
+      {pageTrips.length > 0 && (
+      <div className="table-scroll" ref={tableScrollRef}>
       <table className="data-table">
         <thead><tr><th>Type</th><th>Pickup → Drop</th><th>Seats</th><th>Status</th><th>Driver</th><th>ETA</th><th></th></tr></thead>
         <tbody>
-          {filteredTrips.map((t) => (
+          {pageTrips.map((t) => (
             <Fragment key={t.id}>
               <tr className={t.status === "UNASSIGNABLE" ? "row-alert" : ""}>
-                <td>{t.type}</td>
-                <td>{t.pickupLabel} → {t.dropLabel}</td>
-                <td>{t.totalSeats}s/{t.totalLuggage}l</td>
-                <td><StatusBadge status={t.status} /></td>
-                <td>{t.driver?.name ?? "—"}</td>
+                <td data-label="Type">{t.type}</td>
+                <td data-label="Pickup → Drop">{t.pickupLabel} → {t.dropLabel}</td>
+                <td data-label="Seats">{t.totalSeats}s/{t.totalLuggage}l</td>
+                <td data-label="Status"><StatusBadge status={t.status} /></td>
+                <td data-label="Driver">{t.driver?.name ?? "—"}</td>
                 <TripEtaCell etaSeconds={t.etaSeconds} />
-                <td>
+                <td data-label="">
                   {(t.status === "QUEUED" || t.status === "UNASSIGNABLE") && (
                     overridingTripId === t.id ? (
                       <button className="secondary" onClick={cancelOverride}>Cancel</button>
@@ -826,6 +870,18 @@ function TripsPanel({
         </tbody>
       </table>
       </div>
+      )}
+      {filteredTrips.length > TRIPS_PAGE_SIZE && (
+        <div className="pagination">
+          <button className="secondary" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1}>
+            Prev
+          </button>
+          <span className="muted">Page {currentPage} of {totalPages}</span>
+          <button className="secondary" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}>
+            Next
+          </button>
+        </div>
+      )}
       </div>
     </div>
   );
@@ -921,9 +977,9 @@ function PaymentsPanel() {
             )}
             {(data?.driverEarnings ?? []).map((d) => (
               <tr key={d.id}>
-                <td>{d.name}</td>
-                <td>{d.vehicleNumber}</td>
-                <td>{formatCents(d.totalEarningsCents)}</td>
+                <td data-label="Driver">{d.name}</td>
+                <td data-label="Vehicle">{d.vehicleNumber}</td>
+                <td data-label="Earned">{formatCents(d.totalEarningsCents)}</td>
               </tr>
             ))}
           </tbody>
@@ -946,11 +1002,11 @@ function PaymentsPanel() {
               <tbody>
                 {pagePayments.map((p) => (
                   <tr key={p.id}>
-                    <td>{p.guestName}</td>
-                    <td>{p.driverName ?? "—"}</td>
-                    <td>{p.pickupLabel} → {p.dropLabel}</td>
-                    <td>{p.fareAmountCents != null ? formatCents(p.fareAmountCents) : "—"}</td>
-                    <td><StatusBadge status={p.paymentStatus} /></td>
+                    <td data-label="Guest">{p.guestName}</td>
+                    <td data-label="Driver">{p.driverName ?? "—"}</td>
+                    <td data-label="Route">{p.pickupLabel} → {p.dropLabel}</td>
+                    <td data-label="Fare">{p.fareAmountCents != null ? formatCents(p.fareAmountCents) : "—"}</td>
+                    <td data-label="Status"><StatusBadge status={p.paymentStatus} /></td>
                   </tr>
                 ))}
               </tbody>

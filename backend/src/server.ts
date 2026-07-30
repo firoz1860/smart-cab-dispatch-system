@@ -43,6 +43,10 @@ app.use("/guest", guestRouter);
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (err.message === "Not allowed by CORS") {
+    res.status(403).json({ error: "Origin not allowed" });
+    return;
+  }
   console.error(err);
   res.status(500).json({ error: "Internal server error" });
 });

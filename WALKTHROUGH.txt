@@ -1,0 +1,210 @@
+SMART CAB DISPATCH SYSTEM — LIVE WALKTHROUGH
+==============================================
+Performed live against the running backend (http://localhost:4001) using the
+same HTTP calls the admin-portal UI makes (curl with cookie jars, simulating
+a browser session per role). Nothing here was faked or simulated in code —
+every response below is a real API response from the actual running app.
+Date: 2026-07-29/30.
+
+Companion doc: DEPLOYMENT.txt (step-by-step Render + Vercel deployment).
+
+
+1. MOBILE-FIRST RESPONSIVE PASS (done first, per priority)
+------------------------------------------------------------
+Reviewed every screen in admin-portal (the single unified app for
+Admin/Driver/Guest) specifically at mobile widths, on top of the earlier
+general responsive pass:
+
+  - Login page: card is 360px max-width:100%, centered with 16px page
+    padding — fits down to the narrowest common phone width (320px) with
+    room to spare.
+  - Tab bar (Admin): 6 tabs + "Run dispatch tick now" wrap onto multiple
+    rows below 600px width instead of overflowing; the dispatch-tick button
+    becomes full-width on mobile so it's not a tiny, hard-to-tap sliver.
+  - All data tables (Drivers, Guests, Trips, Payments, Requests) sit inside
+    a horizontally-scrollable `.table-scroll` wrapper, so dense tables never
+    force the whole page to scroll sideways.
+  - FOUND AND FIXED a real mobile bug: tapping "Edit" on a driver row, or
+    "Override assign" on a trip row, opens an inline form as a new table
+    row. On a phone, reaching that button in the first place usually means
+    the table is already scrolled right (to see the last column). The
+    newly-opened form then rendered at the table's left edge — outside the
+    user's current scroll position — so it looked like nothing happened.
+    Fixed in admin-portal/src/pages/AdminDashboard.tsx: opening an edit or
+    an override now auto-scrolls that table back to the left so the form is
+    immediately visible, no manual scrolling required.
+  - Guest view uses its own narrower shell (`.guest-app-shell`, capped at
+    480px on mobile) and stacks the "current ride" / "request + trip list"
+    columns vertically below 860px width — confirmed this still reads
+    correctly at 320-414px phone widths.
+  - Driver view's two-step action buttons (Mark arrived → Confirm
+    boarded/dropped) stack via `.button-row`'s flex-wrap, so they don't get
+    clipped on narrow screens.
+  - Toast notifications reposition from top-right to bottom, full-width
+    (minus margins) below 600px, so they don't cover the tab bar on phones.
+  - Verified with `npm run build` after the fix — production build still
+    succeeds, no new TypeScript errors, bundle sizes unchanged.
+
+  Known, accepted limitation: this was reviewed via code + CSS breakpoint
+  analysis (no browser automation tool available in this environment), the
+  same limitation already documented in README.md's "Known limitations"
+  section. If anything looks visually off on a real device, the first place
+  to check is admin-portal/src/App.css's breakpoint rules.
+
+
+2. LIVE DYNAMIC WALKTHROUGH — fresh Admin, Driver, Guest, full trip + payment
+------------------------------------------------------------------------------
+All of the following used the real backend, the real matching engine, and
+real database writes — not mocked.
+
+Step 1 — New Admin account
+  Admin accounts are intentionally NOT self-service (there is no
+  POST /admin/... route to create another admin — see backend/src/routes/
+  admin.ts). This is deliberate: admin is the trusted root role, so new
+  admin accounts are provisioned out-of-band by whoever runs the seed/setup
+  script, the same way backend/src/prisma/seed.ts provisions the original
+  demo admin. Created one the same way, directly via Prisma:
+
+    Name:  Walkthrough Admin
+    Phone: 9000009999
+    PIN:   walk2026
+
+  Logged in -> 200 OK, {"role":"ADMIN","name":"Walkthrough Admin", ...}
+
+Step 2 — New Driver (onboarded BY the new admin, via POST /admin/drivers —
+  exactly what the "Onboard a driver" form on the Drivers tab does)
+
+    Name:    Walkthrough Driver
+    Phone:   9019999999
+    PIN:     5555
+    Vehicle: KA-01-WT-2026 (4 seats / 2 luggage)
+    Start:   12.9716, 77.5946  (Hilltop Residency)
+
+  Created -> 200 OK with the new driver's full record, status OFFLINE.
+
+Step 3 — New Guest (registered BY the new admin, via POST /admin/guests —
+  exactly what the "Register a guest" form on the Guests tab does)
+
+    Name:  Walkthrough Guest
+    Phone: 92099999999
+    PIN:   7777
+    Party: 1 seat / 1 bag
+
+  Created -> 200 OK.
+
+Step 4 — Both new accounts log in independently (own cookie sessions)
+  Driver login  -> 200 OK, role DRIVER, driverId returned.
+  Guest login   -> 200 OK, role GUEST, guestId returned.
+  Driver goes online -> POST /driver/status {"status":"AVAILABLE"} -> 200 OK.
+
+Step 5 — Guest requests an on-demand ride
+  POST /guest/request: Hilltop Residency -> Grand Convene Center (Venue).
+  Result: new Trip created with origin=ON_DEMAND, status=PENDING_APPROVAL.
+  Confirms the engine does NOT touch it yet — matches the documented
+  guest-can't-pick-a-driver design.
+
+Step 6 — Admin approves the request
+  POST /admin/requests/:id/approve -> status flips PENDING_APPROVAL -> QUEUED
+  and fires an immediate dispatch tick (not waiting for the next 15s pass).
+
+Step 7 — Dispatch engine assigns the new driver automatically
+  Checked GET /driver/trip immediately after approval: the trip was already
+  ASSIGNED to "Walkthrough Driver" (their idle starting position happened to
+  be exactly the pickup point, so ETA was 0 and they were the obvious best
+  fit). No admin/driver had to manually pick anyone.
+
+Step 8 — Driver drives the two-step lifecycle (the same calls the Driver
+  view's buttons make)
+  1. POST /driver/trip/:id/accept                    -> 200 OK
+  2. POST /driver/location  (GPS ping at pickup)      -> 200 OK, etaSeconds:0
+  3. POST /driver/trip/:id/arrive   ("Mark arrived at pickup") -> 200 OK
+  4. POST /driver/trip/:id/advance  ("Confirm guest boarded")  -> 200 OK
+  5. POST /driver/location  (GPS ping at drop/venue)  -> 200 OK, etaSeconds:0
+  6. POST /driver/trip/:id/arrive   ("Mark arrived at drop-off") -> 200 OK
+  7. POST /driver/trip/:id/advance  ("Confirm guest dropped")  -> 200 OK
+     -> trip status flips to COMPLETED, totalHaltSeconds recorded (4s in
+        this run - the real gap between "arrived" and "confirmed" calls),
+        fare computed automatically: fareAmountCents = 39101 (~Rs.391.01),
+        driver automatically put ON_BREAK with freeAt = now + 10 minutes
+        (breakSecondsAfterTrip from the Event config).
+
+Step 9 — Payment (Stripe not configured in this environment, by design —
+  backend/.env has STRIPE_SECRET_KEY empty, same as a fresh checkout)
+  GET /guest/trips/:id/payment -> HTTP 503,
+    {"error":"Payments are not configured for this event yet"}
+  This is the documented graceful-degradation path, not a crash: the fare
+  still computes and is visible everywhere (guest trip history, admin
+  Payments tab, this exact response), it just can't be charged without a
+  Stripe test key. Confirmed the guest's own trip history
+  (GET /guest/trips) shows myFareAmountCents: 39101, myPaymentStatus:
+  "UNPAID" — correct and consistent with the admin-side view below.
+
+Step 10 — Admin Payments tab reflects it correctly
+  GET /admin/payments ->
+    totalRevenueCents: 0 (nothing collected yet - correct, unpaid)
+    totalPendingCents: 39101 (this fare, correctly counted as pending)
+    driverEarnings: [] for Walkthrough Driver (correct — earnings only
+      credit once a payment actually succeeds via the Stripe webhook,
+      never just from completing a trip)
+    fares ledger row: Walkthrough Guest / Walkthrough Driver / Hilltop
+      Residency -> Grand Convene Center / Rs.391.01 / UNPAID
+
+  To see this turn into an actual paid, driver-credited entry: set
+  STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET in backend/.env and
+  VITE_STRIPE_PUBLISHABLE_KEY in admin-portal/.env (see README.md's
+  "Payments" section), then use a Stripe test card from the guest's "Pay
+  now" button.
+
+Step 11 — RBAC / security spot-checks (re-verified live, not just from code)
+  Driver session -> GET /admin/overview           -> 403 Forbidden for this role
+  Guest session  -> GET /driver/trip               -> 403 Forbidden for this role
+  No session at all -> GET /admin/overview         -> 401 Not signed in
+  Cross-origin request (Origin: evil.example.com)  -> 403 Origin not allowed
+    (FOUND AND FIXED during this walkthrough: this used to return a bare
+    500 Internal Server Error instead of a clean 403 — same effective
+    security outcome, since the browser still blocks the response either
+    way due to the missing CORS header, but the 500 was needlessly noisy
+    and looked like a bug. Fixed in backend/src/server.ts's error handler.)
+  Same-origin request (Origin: http://localhost:5173) -> 200 OK, with
+    Access-Control-Allow-Origin echoed back correctly.
+  Login lockout: 5 wrong-PIN attempts against the new driver's phone number
+    -> 6th attempt (even with the CORRECT pin) returns 429 "Too many failed
+    attempts for this account." Confirms the per-phone brute-force lockout
+    still works after all the session's changes. (Lockout state is
+    in-memory and clears on backend restart - noted as a real limitation:
+    a horizontally-scaled/multi-instance deployment would need this moved
+    to shared storage, e.g. Redis, to stay effective. Not needed for this
+    single-event, single-process use case.)
+
+
+3. RESULT: ACCOUNTS LEFT IN PLACE FOR YOU TO EXPLORE
+------------------------------------------------------
+These are real accounts in your actual database right now — open the app
+and log in as any of them to see this walkthrough's result yourself:
+
+  Admin  -> phone 9000009999  / PIN walk2026
+  Driver -> phone 9019999999  / PIN 5555   (vehicle KA-01-WT-2026)
+  Guest  -> phone 92099999999 / PIN 7777
+
+The guest's completed trip (Hilltop Residency -> Grand Convene Center,
+Rs.391.01, UNPAID) will show up in:
+  - Guest login -> "Past trips"
+  - Admin login -> Trips tab, and Payments tab (fares ledger + pending total)
+  - Driver login -> total earnings still Rs.0 (correct - unpaid fares don't
+    credit driver earnings)
+
+
+4. FILES CHANGED DURING THIS PASS
+------------------------------------
+  admin-portal/src/pages/AdminDashboard.tsx
+    - Added useRef-based auto-scroll-to-left when opening the driver "Edit"
+      form or a trip's "Override assign" form, fixing the mobile bug where
+      the newly-shown form rendered outside the visible (horizontally
+      scrolled) area of the table.
+  backend/src/server.ts
+    - CORS rejections now return a clean 403 {"error":"Origin not allowed"}
+      instead of a bare 500 Internal Server Error.
+
+Both changes were verified: admin-portal `npm run build` passes, backend
+`npm run build` and `npm run test` both pass, and all of the above live API
+calls were re-run after the changes to confirm nothing regressed.

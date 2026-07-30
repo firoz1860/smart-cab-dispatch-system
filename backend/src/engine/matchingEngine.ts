@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma";
 import { getDistanceProvider } from "../lib/distanceProvider";
+import { getCachedEventRow } from "../lib/eventConfig";
 import { clusterQueuedTrips } from "./clustering";
 import { splitOversizedTrips } from "./splitting";
 import { computePriorityScore } from "./priority";
@@ -9,8 +10,13 @@ import { DRIVER_ACTIVE_TRIP_STATUSES } from "../lib/constants";
 import type { Driver, Trip, TripGuest } from "@prisma/client";
 import { emitDispatchEvent, emitToDriver } from "../realtime/socket";
 
+// Runs on every 15s dispatch tick (twice, for two different fields) - was a
+// fresh `prisma.event.findFirst()` each time for a single-row table that
+// only changes when an admin edits event settings via PATCH /admin/event.
+// getCachedEventRow() serves that from an in-memory cache (see
+// lib/eventConfig.ts) instead of hitting the DB on every tick.
 async function getEventConfig() {
-  const event = await prisma.event.findFirst();
+  const event = await getCachedEventRow();
   return {
     maxDetourSeconds: event?.maxDetourSeconds ?? ENGINE_CONFIG.DEFAULT_MAX_DETOUR_SECONDS,
     breakSeconds: event?.breakSecondsAfterTrip ?? ENGINE_CONFIG.DEFAULT_BREAK_SECONDS,

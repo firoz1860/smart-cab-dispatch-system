@@ -7,6 +7,8 @@ import { PLACE_TYPES, TRIP_TYPES, ACTIVE_TRIP_STATUSES } from "../lib/constants"
 import { runDispatchTick, runBatchAssignment } from "../engine/matchingEngine";
 import { adminOverrideAssign, TripActionError } from "../engine/tripActions";
 import { getNextStop } from "../engine/stops";
+import { getCachedEventRow, invalidateEventConfig } from "../lib/eventConfig";
+import { cache, cached } from "../lib/cache";
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireRole("ADMIN"));
@@ -22,7 +24,7 @@ adminRouter.get("/overview", async (_req, res) => {
       orderBy: { requestedAt: "desc" },
       take: 300,
     }),
-    prisma.event.findFirst(),
+    getCachedEventRow(),
   ]);
   res.json({ drivers, trips, event });
 });
@@ -318,50 +320,56 @@ adminRouter.post("/dispatch/tick", async (_req, res) => {
 // not a real bank transfer - see docs/DESIGN.md "Payments" for the boundary
 // (actual driver payouts would need Stripe Connect + per-driver onboarding).
 
+const PAYMENTS_CACHE_KEY = "admin:payments";
+const PAYMENTS_CACHE_TTL_MS = 4000; // admin-portal polls this every 8s - halves the DB load with negligible staleness
+
 adminRouter.get("/payments", async (_req, res) => {
-  const tripGuests = await prisma.tripGuest.findMany({
-    where: { fareAmountCents: { not: null } },
-    include: { guest: true, trip: { include: { driver: true } } },
-    orderBy: [{ paidAt: "desc" }, { id: "desc" }],
-    take: 300,
-  });
+  const body = await cached(cache, PAYMENTS_CACHE_KEY, PAYMENTS_CACHE_TTL_MS, async () => {
+    const tripGuests = await prisma.tripGuest.findMany({
+      where: { fareAmountCents: { not: null } },
+      include: { guest: true, trip: { include: { driver: true } } },
+      orderBy: [{ paidAt: "desc" }, { id: "desc" }],
+      take: 300,
+    });
 
-  let totalRevenueCents = 0;
-  let totalPendingCents = 0;
-  for (const tg of tripGuests) {
-    const amount = tg.fareAmountCents ?? 0;
-    if (tg.paymentStatus === "PAID") totalRevenueCents += amount;
-    else if (tg.paymentStatus === "PENDING" || tg.paymentStatus === "UNPAID") totalPendingCents += amount;
-  }
+    let totalRevenueCents = 0;
+    let totalPendingCents = 0;
+    for (const tg of tripGuests) {
+      const amount = tg.fareAmountCents ?? 0;
+      if (tg.paymentStatus === "PAID") totalRevenueCents += amount;
+      else if (tg.paymentStatus === "PENDING" || tg.paymentStatus === "UNPAID") totalPendingCents += amount;
+    }
 
-  const driverEarnings = await prisma.driver.findMany({
-    where: { totalEarningsCents: { gt: 0 } },
-    orderBy: { totalEarningsCents: "desc" },
-    select: { id: true, name: true, vehicleNumber: true, totalEarningsCents: true },
-  });
+    const driverEarnings = await prisma.driver.findMany({
+      where: { totalEarningsCents: { gt: 0 } },
+      orderBy: { totalEarningsCents: "desc" },
+      select: { id: true, name: true, vehicleNumber: true, totalEarningsCents: true },
+    });
 
-  res.json({
-    payments: tripGuests.map((tg) => ({
-      id: tg.id,
-      tripId: tg.tripId,
-      guestName: tg.guest.name,
-      driverName: tg.trip.driver?.name ?? null,
-      pickupLabel: tg.stopPickupLabel ?? tg.trip.pickupLabel,
-      dropLabel: tg.stopDropLabel ?? tg.trip.dropLabel,
-      fareAmountCents: tg.fareAmountCents,
-      paymentStatus: tg.paymentStatus,
-      paidAt: tg.paidAt,
-    })),
-    totalRevenueCents,
-    totalPendingCents,
-    driverEarnings,
+    return {
+      payments: tripGuests.map((tg) => ({
+        id: tg.id,
+        tripId: tg.tripId,
+        guestName: tg.guest.name,
+        driverName: tg.trip.driver?.name ?? null,
+        pickupLabel: tg.stopPickupLabel ?? tg.trip.pickupLabel,
+        dropLabel: tg.stopDropLabel ?? tg.trip.dropLabel,
+        fareAmountCents: tg.fareAmountCents,
+        paymentStatus: tg.paymentStatus,
+        paidAt: tg.paidAt,
+      })),
+      totalRevenueCents,
+      totalPendingCents,
+      driverEarnings,
+    };
   });
+  res.json(body);
 });
 
 // ---- Event config -----------------------------------------------------------
 
 adminRouter.get("/event", async (_req, res) => {
-  res.json(await prisma.event.findFirst());
+  res.json(await getCachedEventRow());
 });
 
 adminRouter.patch("/event", async (req, res) => {
@@ -372,7 +380,9 @@ adminRouter.patch("/event", async (req, res) => {
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  const event = await prisma.event.findFirst();
+  const event = await getCachedEventRow();
   if (!event) return res.status(404).json({ error: "No event configured" });
-  res.json(await prisma.event.update({ where: { id: event.id }, data: parsed.data }));
+  const updated = await prisma.event.update({ where: { id: event.id }, data: parsed.data });
+  invalidateEventConfig(); // so the next dispatch tick / read sees this immediately, not after the TTL
+  res.json(updated);
 });

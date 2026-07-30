@@ -1,0 +1,307 @@
+SMART CAB DISPATCH SYSTEM — DEPLOYMENT GUIDE (Render + Vercel)
+=================================================================
+From scratch, step by step. Backend (Express + Socket.IO + Prisma/SQLite)
+goes on Render because it's a long-running Node process (Socket.IO
+connections and a setInterval-based dispatch loop that ticks every 15s
+can't run on Vercel's serverless functions, which are short-lived and
+spin down between requests). The frontend (admin-portal, the single
+unified Admin/Driver/Guest app) is a static Vite build, which is exactly
+what Vercel is for.
+
+Companion doc: WALKTHROUGH.txt (a full live run-through of the app,
+including account creation and a completed paid trip, for reference on
+what "working" looks like).
+
+
+PART 0 — BEFORE YOU START
+---------------------------
+You need, all free to create:
+  1. A GitHub account, with this project pushed to a GitHub repo.
+  2. A Render account: https://dashboard.render.com/register
+  3. A Vercel account: https://vercel.com/signup
+  4. (Optional, only if you want real payment charging) A Stripe account in
+     TEST mode: https://dashboard.stripe.com/register — no business
+     verification needed for test mode.
+
+If this project isn't a git repo yet:
+  1. Open a terminal in the project root
+     (D:\Genrative Ai\project\smart cab dispatch system)
+  2. git init
+  3. Create a .gitignore if one doesn't already list these (check first —
+     it likely already does): node_modules/, backend/dist/, backend/.env,
+     admin-portal/.env, backend/dev.db, *.db, guest-app/.env
+  4. git add .
+  5. git commit -m "Initial commit"
+  6. Create an empty repo on GitHub (github.com/new, do NOT initialize
+     with a README), then:
+     git remote add origin https://github.com/<you>/<repo>.git
+     git branch -M main
+     git push -u origin main
+
+IMPORTANT: never commit real .env files (they contain JWT_SECRET, Stripe
+secret keys, etc). Both backend/.env and admin-portal/.env should be
+gitignored — you'll type their values directly into Render's/Vercel's
+dashboards instead, which is exactly how those platforms expect secrets
+to be provided.
+
+
+PART 1 — BACKEND ON RENDER
+-----------------------------
+
+Step 1.1 — Create the Web Service
+  1. Log into Render -> click "New +" -> "Web Service".
+  2. Connect your GitHub account if you haven't, then select this repo.
+  3. Render will ask for these settings — fill them in exactly:
+       Name:               scds-backend  (or any name you like)
+       Region:             pick the one closest to your event's location
+       Branch:             main
+       Root Directory:     backend
+       Runtime:            Node
+       Build Command:      npm install && npm run prisma:generate && npm run build
+       Start Command:      npx prisma migrate deploy && npm run start
+       Instance Type:      Free is fine to try it out (see the "Free tier
+                            limitations" note in Part 4 before using it for
+                            a real event)
+
+  Why "migrate deploy" (not "migrate dev") in the start command: "dev" is
+  interactive and meant for local development; "deploy" is the
+  non-interactive, production-safe command that applies any pending
+  migrations from prisma/migrations/ to whatever database DATABASE_URL
+  points at, every time the service starts. This means schema changes you
+  push later are applied automatically on the next deploy, with no manual
+  step.
+
+Step 1.2 — Environment variables
+  Still on the Render service's setup (or afterwards under the
+  "Environment" tab), add these:
+
+    NODE_ENV        = production
+      (Required — this is what makes the app use secure, cross-site
+      cookies. Without it, login will appear to succeed but the browser
+      will silently drop the session cookie on every request after,
+      because Vercel and Render are different domains. See Part 4.)
+
+    JWT_SECRET      = <a long random string>
+      Generate one yourself, e.g. run this locally and paste the output:
+        node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+      Never reuse the JWT_SECRET from your local backend/.env for a public
+      deployment — generate a fresh one.
+
+    DATABASE_URL    = file:/var/data/dev.db
+      See Step 1.3 below — this path only works once you've attached a
+      persistent Disk at /var/data. Until you do that, you can leave it as
+      file:./dev.db (relative) for a quick first deploy, but read Step 1.3
+      before relying on this for anything beyond a first smoke test — the
+      database resets on every redeploy without a Disk.
+
+    CORS_ORIGIN     = (leave blank for now — come back after Part 2 and
+      set it to your Vercel URL, e.g. https://your-app.vercel.app, with NO
+      trailing slash. This is what lets the browser accept cross-origin
+      cookies from your live frontend. Every request from an origin not on
+      this list, and not localhost, gets a 403.)
+
+    GOOGLE_MAPS_API_KEY = (optional — leave blank to use the built-in
+      Haversine-distance ETA model, which needs no API key and works fine)
+
+    STRIPE_SECRET_KEY      = (optional — see Part 3)
+    STRIPE_WEBHOOK_SECRET  = (optional — see Part 3)
+
+  Do NOT set PORT — Render injects its own PORT value automatically and
+  the app already reads process.env.PORT, so setting it yourself can
+  actually break the deploy.
+
+Step 1.3 — Persistent storage for the SQLite database (read this!)
+  Render's default disk is EPHEMERAL: every time you redeploy (push new
+  code) or the free-tier instance spins down and back up, the filesystem
+  resets, and with it, dev.db — all drivers, guests, and trips vanish.
+  For a single-event dispatch system this is sometimes fine (you reseed
+  fresh data before each event anyway), but if you want data to survive
+  redeploys, pick ONE of these:
+
+  Option A — Attach a Render Disk (simplest, keeps SQLite, no code changes)
+    Available on paid instance types (not the free tier).
+    1. On the service's "Disks" tab, click "Add Disk".
+    2. Mount path: /var/data      Size: 1 GB is plenty.
+    3. Set DATABASE_URL = file:/var/data/dev.db (must be this exact path —
+       matches the mount path above).
+    4. Redeploy. From now on dev.db lives on the persistent disk and
+       survives redeploys and restarts.
+
+  Option B — Switch to Render's managed Postgres (more durable, more
+  setup — recommended only if you outgrow a single SQLite file, e.g.
+  running multiple backend instances at once, which SQLite doesn't
+  support safely)
+    1. Render dashboard -> "New +" -> "PostgreSQL" -> create a free/starter
+       instance, copy its "Internal Database URL".
+    2. In backend/prisma/schema.prisma, change:
+         datasource db {
+           provider = "postgresql"   // was "sqlite"
+           url      = env("DATABASE_URL")
+         }
+    3. Commit and push that change, delete the old
+       backend/prisma/migrations/ folder's SQLite-specific history and run
+       `npx prisma migrate dev --name init` locally against a local
+       Postgres (or just against the new Render Postgres URL) to generate
+       fresh Postgres migrations, then push those.
+    4. Set DATABASE_URL on the Render web service to the Postgres
+       "Internal Database URL" Render gave you.
+    This is a real migration, not a config toggle — only do it if you
+    actually need Postgres; Option A is enough for the "single private
+    event" scope this project targets.
+
+  For a first deploy / quick test, it's fine to skip both and use the
+  default ephemeral disk with file:./dev.db — just know you'll need to
+  reseed (Step 1.4) after every redeploy.
+
+Step 1.4 — First-run: create the schema and seed demo data
+  "npx prisma migrate deploy" (in the start command) creates the tables
+  automatically on first boot, but there's no data yet. To seed demo data
+  (or create your real event's drivers/guests):
+  1. On the Render service page, open the "Shell" tab (top right).
+  2. Run: npm run seed
+     This wipes and reseeds demo data and prints login credentials, same
+     as running it locally — see README.md.
+  3. Alternatively, once you have an admin logged in through the deployed
+     frontend, you can onboard real drivers/guests through the Admin
+     dashboard's UI instead of reseeding demo data — see WALKTHROUGH.txt
+     for exactly what that looks like end-to-end.
+
+Step 1.5 — Deploy and verify
+  1. Click "Create Web Service" (or "Save Changes" if editing). Render
+     builds and deploys — watch the Logs tab.
+  2. Once live, note your backend's URL, e.g.
+     https://scds-backend.onrender.com
+  3. Verify it's actually up:
+       curl https://scds-backend.onrender.com/health
+     should return {"ok":true}.
+
+
+PART 2 — FRONTEND ON VERCEL
+------------------------------
+
+Step 2.1 — Import the project
+  1. Log into Vercel -> "Add New..." -> "Project".
+  2. Import the same GitHub repo.
+  3. Vercel auto-detects it's a monorepo with multiple folders — set:
+       Root Directory:    admin-portal
+       Framework Preset:  Vite (should auto-detect once Root Directory is set)
+       Build Command:     npm run build     (runs "tsc -b && vite build")
+       Output Directory:  dist
+       Install Command:   npm install       (default, leave as-is)
+
+Step 2.2 — Environment variables
+  Under "Environment Variables", add:
+
+    VITE_API_URL                = https://scds-backend.onrender.com
+      (your Render backend URL from Step 1.5 — no trailing slash)
+
+    VITE_STRIPE_PUBLISHABLE_KEY = (optional — see Part 3; starts pk_test_...)
+
+  Vite only bakes VITE_-prefixed variables into the build at build time,
+  so if you change these later you must redeploy (Vercel does this
+  automatically if you push a commit, or you can hit "Redeploy" manually
+  after just changing env vars).
+
+Step 2.3 — Deploy
+  1. Click "Deploy". Vercel builds and gives you a URL like
+     https://your-app.vercel.app (and a preview URL per branch/PR, if you
+     want those later).
+  2. Don't open it and try to log in yet — one more step first.
+
+Step 2.4 — Close the loop: tell the backend to trust this frontend
+  1. Copy your Vercel URL exactly, e.g. https://your-app.vercel.app
+     (no trailing slash).
+  2. Back on Render, open the backend service -> Environment -> set
+     CORS_ORIGIN to that exact URL.
+  3. Save — Render will automatically redeploy the backend with the new
+     value.
+  4. NOW open your Vercel URL and log in with a seeded account (see
+     README.md for demo credentials, or whatever you created in Step 1.4).
+     If login succeeds but you get bounced back to the login page on
+     refresh, double check: NODE_ENV=production is actually set on Render,
+     and CORS_ORIGIN exactly matches your Vercel URL (scheme + host, no
+     trailing slash, no path).
+
+
+PART 3 — STRIPE PAYMENTS IN PRODUCTION (optional)
+-----------------------------------------------------
+Skip this whole section if you don't need real (test-mode) payment
+charging — fares still compute and display everywhere without it, they
+just stay UNPAID (see WALKTHROUGH.txt Step 9 for exactly what that looks
+like).
+
+  1. In the Stripe Dashboard, make sure you're in TEST mode (toggle, top
+     right), then Developers -> API keys:
+       - Secret key (sk_test_...)      -> Render env STRIPE_SECRET_KEY
+       - Publishable key (pk_test_...) -> Vercel env VITE_STRIPE_PUBLISHABLE_KEY
+  2. Developers -> Webhooks -> "Add endpoint":
+       Endpoint URL: https://scds-backend.onrender.com/webhooks/stripe
+       Events to send: payment_intent.succeeded, payment_intent.payment_failed
+  3. After creating it, click into the new endpoint and reveal its
+     "Signing secret" (whsec_...) -> Render env STRIPE_WEBHOOK_SECRET.
+  4. Save all three env vars, let both services redeploy.
+  5. Test with a Stripe test card (4242 4242 4242 4242, any future
+     expiry, any CVC) from a completed trip's "Pay now" button in the
+     guest view.
+
+
+PART 4 — GOTCHAS AND LIMITATIONS SPECIFIC TO THIS DEPLOYMENT
+------------------------------------------------------------------
+  - Free-tier Render instances spin down after ~15 minutes of no traffic
+    and take ~30-60s to wake back up on the next request. For a real
+    event, use a paid "always-on" instance type — a cold start mid-event
+    means guests/drivers briefly can't reach the backend, and the 15s
+    dispatch loop is obviously paused the whole time the instance is
+    asleep.
+  - The auth cookie's SameSite attribute is "none" in production
+    (required for a cross-domain Vercel <-> Render setup) and "lax" in
+    local dev — this is handled automatically by NODE_ENV, see
+    backend/src/middleware/auth.ts. Don't hardcode it back to "lax" if
+    you ever touch that file, or cross-domain login will silently break
+    (login succeeds, every following request looks logged-out).
+  - CORS_ORIGIN must match your frontend's origin EXACTLY (scheme + host,
+    e.g. https://your-app.vercel.app) — no trailing slash, no path, no
+    wildcard (browsers reject wildcard origins for credentialed/cookie
+    requests, which is why this project doesn't use one).
+  - If you set up a custom domain on Vercel (e.g. cabs.yourevent.com)
+    after already configuring CORS_ORIGIN, update CORS_ORIGIN on Render to
+    match the new domain too (you can comma-separate multiple origins in
+    CORS_ORIGIN if you want both the vercel.app URL and a custom domain to
+    keep working).
+  - SQLite + no Disk = data loss on every redeploy (Part 1, Step 1.3)
+    — this is the single most common "it worked yesterday, now everything
+    is empty" surprise with this setup. If that happens, you forgot the
+    Disk (or Postgres) step.
+  - Login rate-limiting/lockout state (Part of the security hardening —
+    see README.md's Security section) lives in memory in the single
+    backend process. It resets on every restart/redeploy, and would need
+    to move to shared storage (e.g. Redis) if you ever run more than one
+    backend instance at once. Not needed for a single Render instance
+    serving one event.
+  - Browser push notifications (the Notification API used for match/
+    arrival alerts) require the site to be served over HTTPS — both
+    Render and Vercel give you HTTPS by default, so this just works once
+    deployed; it's only an issue if you try to test push notifications
+    over a bare http:// URL.
+
+
+PART 5 — POST-DEPLOY SMOKE TEST CHECKLIST
+--------------------------------------------
+Run through this once, the same way WALKTHROUGH.txt did locally, but
+against your live URLs:
+  [ ] curl https://<render-url>/health -> {"ok":true}
+  [ ] Open https://<vercel-url>, log in as the seeded admin
+  [ ] Admin: onboard one driver, register one guest (Drivers/Guests tabs)
+  [ ] Log out, log in as that new driver -> go online
+  [ ] Log out, log in as that new guest -> submit an on-demand request
+  [ ] Log back in as admin -> approve the request (Requests tab)
+  [ ] Confirm the trip shows ASSIGNED with a driver within a few seconds
+  [ ] Log in as the driver -> accept -> mark arrived -> confirm boarded ->
+      mark arrived at drop -> confirm dropped
+  [ ] Log in as the guest -> see the completed trip + fare in "Past trips"
+  [ ] Admin -> Payments tab shows the fare in the pending/collected totals
+  [ ] Refresh the page as any logged-in role -> confirm you're NOT bounced
+      back to the login screen (this is the real test of the cross-domain
+      cookie/CORS setup actually working)
+
+If every box checks, the deployment is done.

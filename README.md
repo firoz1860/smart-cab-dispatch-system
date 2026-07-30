@@ -9,6 +9,11 @@ overrides when needed.
 
 See [`docs/DESIGN.md`](docs/DESIGN.md) for the matching algorithm, trade-offs,
 and data model in depth. This file is the practical "how do I run it" guide.
+See [`WALKTHROUGH.txt`](WALKTHROUGH.txt) for a full live run-through (fresh
+admin/driver/guest accounts, a trip through its whole lifecycle, a fare, and
+RBAC/security checks — all against the real running app, not simulated) and
+[`DEPLOYMENT.txt`](DEPLOYMENT.txt) for a from-scratch, step-by-step guide to
+deploying the backend on Render and the frontend on Vercel.
 
 ## What's in it
 
@@ -221,7 +226,12 @@ Sign-in is hardened beyond a bare JWT-in-localStorage setup:
   `localStorage`. The Socket.IO handshake authenticates off the same cookie
   (`withCredentials`), so there's no separate token floating around either.
   CORS is locked to specific origins (required for credentialed cookies to
-  work at all — a wildcard `*` origin is rejected by browsers here).
+  work at all — a wildcard `*` origin is rejected by browsers here). The
+  cookie's `SameSite` attribute adapts automatically: `lax` in local dev
+  (frontend/backend differ only by port, which browsers treat as the same
+  site) and `none` (plus `secure`) in production, since a real deployment
+  typically puts the frontend and backend on different domains — see
+  [`DEPLOYMENT.txt`](DEPLOYMENT.txt).
 - **Rate limiting + per-account lockout.** `/auth/login` is throttled per-IP
   (20 attempts/15 min) and additionally locks out a specific phone number for
   15 minutes after 5 failed attempts, so a distributed attacker rotating IPs
@@ -232,6 +242,39 @@ Sign-in is hardened beyond a bare JWT-in-localStorage setup:
 - **Generic error messages** ("Invalid phone or PIN") regardless of whether
   the phone exists or the PIN was wrong, for the same reason.
 - **RBAC enforced server-side, not just in the UI** — see [Role separation](docs/DESIGN.md#10-role-separation-rbac).
+- **Unique identity.** Every record is keyed by an opaque `cuid()`, never a
+  guessable auto-increment integer. `phone` (the login identifier) is
+  DB-unique, and a `User`'s `driverId`/`guestId` foreign keys are themselves
+  unique, so one phone number can never map to more than one role or record.
+
+## Architecture & scalability
+
+- **Indexing** — every field actually used as a query predicate on a
+  frequent path is indexed (`Driver.status`/`Trip.status` for the 15s
+  dispatch loop, `Trip.driverId`, `TripGuest.guestId` for the guest view's
+  5s poll, `TripGuest.stripePaymentIntentId` for the payment webhook) —
+  and nothing else, since an index nothing queries is pure write-cost.
+- **Caching** — a small `Cache` interface (`backend/src/lib/cache.ts`) with
+  one in-memory implementation today, used for the single `Event` config row
+  (re-fetched on every dispatch tick otherwise) and the admin Payments
+  aggregate query. Every call site depends on the interface, not the
+  implementation, so a `RedisCache` for a multi-instance deployment is a new
+  class, not a rewrite. Live trip/driver data is deliberately *not* cached —
+  dispatch decisions need it fresh.
+- **ACID payments** — fare computation, PaymentIntent creation, and the
+  Stripe webhook's payment-status + driver-earnings-credit are wrapped in
+  DB transactions with idempotency guards, so a crash mid-write or a
+  redelivered webhook event (Stripe only guarantees *at-least-once*
+  delivery) can't double-charge, double-credit, or leave partial state. See
+  [`docs/DESIGN.md` §9](docs/DESIGN.md#9-payments) for exactly how, and
+  [`WALKTHROUGH.txt`](WALKTHROUGH.txt) for a live test proving a replayed
+  webhook event credits a driver exactly once.
+- **SOLID structure** — login is split by responsibility: `AuthService`
+  (verifies credentials) depends on a `LoginAttemptTracker` *interface*
+  (lockout policy) via constructor injection, not a concrete implementation,
+  and knows nothing about HTTP; the Express route is pure request/response
+  glue. See [`docs/DESIGN.md` §10-11](docs/DESIGN.md#10-role-separation-rbac)
+  for the full breakdown and the scalability rationale behind it.
 
 ## Environment files
 
@@ -243,7 +286,7 @@ Each app has its own `.env` (already populated with working local defaults):
 | `admin-portal/.env` | `VITE_API_URL`, `VITE_STRIPE_PUBLISHABLE_KEY` (optional) |
 | `guest-app/.env` | Only relevant if you still run the standalone guest-app; same variables as before |
 
-## Known limitations (see docs/DESIGN.md §11 for the full list)
+## Known limitations (see docs/DESIGN.md §12 for the full list)
 
 - Driver payouts are a ledger, not a real transfer (see [Payments](#payments)).
 - No real push-notification service worker — browser Notification API only,

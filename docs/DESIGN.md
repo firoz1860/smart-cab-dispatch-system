@@ -218,6 +218,30 @@ than a single private event's fleet needs by default, so it's deliberately
 not built. The admin Payments tab and the driver's own earnings figure are
 both honest about being "money owed," not "money sent."
 
+**ACID guarantees.** Two places touch money-adjacent state across more than
+one row, and both are wrapped so a crash or a redelivered event can't leave
+half-applied data:
+- `completeStop()`'s drop-off branch (`tripActions.ts`) computes each dropped
+  guest's fare and creates their Stripe PaymentIntent (an external network
+  call, deliberately kept *outside* any DB transaction — a transaction
+  should never hold open across a third-party API round-trip), then persists
+  every affected `TripGuest` row, the `Trip`'s own status, and (on the final
+  stop) the `Driver`'s break state in a single `prisma.$transaction([...])`.
+  It also filters out guests already marked `droppedOff` before doing any of
+  this, so a retry after a mid-loop crash can't re-create a second
+  PaymentIntent for a guest already processed.
+- The webhook handler (`stripeWebhook.ts`) wraps its read-check-update-credit
+  sequence in one interactive `prisma.$transaction(async (tx) => {...})`.
+  Stripe explicitly guarantees only *at-least-once* delivery — the same
+  `payment_intent.succeeded` event can and does arrive more than once. The
+  guard is a conditional `updateMany` (`WHERE paymentStatus IN
+  (PENDING, UNPAID)`) evaluated at write time, inside the same transaction as
+  the driver-earnings credit: whichever delivery's write actually matches a
+  row is the only one that gets to credit `Driver.totalEarningsCents`, and
+  the two either commit together or not at all. Verified directly (not just
+  by inspection): replaying the exact same webhook event twice against a
+  test row credits the driver's earnings exactly once, not twice.
+
 ## 10. Role separation (RBAC)
 
 A single `User` table (`role: ADMIN | DRIVER | GUEST`) backs all three login
@@ -252,7 +276,95 @@ attach it automatically) for its room-based fan-out: `role:admin` receives
 all dispatch events, `driver:<id>` and `guest:<id>` rooms receive only events
 addressed to that specific driver/guest.
 
-## 11. Notable trade-offs / known simplifications
+**Identity.** Every entity (`User`, `Driver`, `Guest`, `Trip`, ...) is keyed
+by an opaque `cuid()`, never an auto-increment integer — IDs aren't
+sequential or guessable, so there's nothing to enumerate even before RBAC is
+considered. `phone` is the human-facing login identifier and is
+DB-uniqueness-enforced (`@unique` in `schema.prisma`, backed by SQLite's
+unique index) and additionally never reused across roles: a `User` row's
+`driverId`/`guestId` are themselves `@unique` foreign keys, so one phone
+number maps to exactly one role and one underlying Driver-or-Guest record.
+
+**Code structure (SOLID).** Login used to be one function that mixed
+parsing, timing-safe comparison, lockout bookkeeping, and cookie-setting.
+It's now split by responsibility:
+- `lib/loginAttemptTracker.ts` exports a `LoginAttemptTracker` **interface**
+  (`isLockedOut` / `recordFailure` / `clear`) with one implementation today,
+  `InMemoryLoginAttemptTracker`. It only knows about lockout policy, nothing
+  about HTTP or passwords.
+- `lib/authService.ts`'s `AuthService` only knows "are these credentials
+  valid, and is this account allowed to try right now" — it takes a
+  `LoginAttemptTracker` through its constructor (Dependency Inversion:
+  depends on the interface, not the concrete in-memory Map) and knows
+  nothing about Express, cookies, or JWTs.
+- `routes/auth.ts` is left as pure HTTP glue: parse the request, ask
+  `AuthService`, translate its answer into a status code + cookie.
+
+The payoff isn't abstraction for its own sake: a horizontally-scaled
+deployment (multiple backend instances behind a load balancer) needs lockout
+state shared across instances, or an attacker who gets load-balanced to a
+fresh instance effectively resets their own lockout counter. Under this
+structure, that's a new class implementing `LoginAttemptTracker` against
+Redis (`INCR` + `EXPIRE`) — `AuthService` and the route don't change at all.
+The same interface-over-implementation shape is used again for read caching
+below (§11).
+
+## 11. Scalability: indexing, caching, and code architecture
+
+This project targets a single event's fleet, so "scalable" here means: no
+query does a full table scan on a hot path, no uncached DB call is made
+where a realistic request rate would otherwise hammer it, and the code is
+structured so swapping a single-process implementation for a distributed
+one (multiple backend instances, a shared cache) doesn't ripple through
+call sites.
+
+**Indexing.** `schema.prisma` indexes every field that's actually used as a
+query predicate on a frequently-hit path — not every field speculatively:
+- `Driver.status` / `Trip.status` — the dispatch loop (every 15s) filters on
+  both.
+- `Trip.driverId` — looked up per-driver constantly (current trip, conflict
+  checks).
+- `TripGuest.guestId` — the guest view polls its own trip history every 5s,
+  and the duplicate-active-request check filters on it too; both were full
+  scans before.
+- `TripGuest.stripePaymentIntentId` — `@unique` (also serves as an index):
+  the Stripe webhook looks a row up by this on every payment event, and it's
+  a real 1:1 relationship in practice (one PaymentIntent, one booking).
+  SQLite/Prisma allow multiple `NULL`s under a unique constraint, so
+  not-yet-paid guests (`NULL`) don't collide with each other.
+
+Deliberately *not* indexed: `User.role` — grep shows no query anywhere
+filters on it (`User` is only ever looked up by the already-unique `phone`,
+or via its `@unique` `driverId`/`guestId` relations) — an index nothing
+reads is pure write-cost.
+
+**Caching.** `lib/cache.ts` defines a `Cache` interface
+(`get`/`set`/`invalidate`/`invalidatePrefix`) with one implementation,
+`InMemoryCache` (TTL-based, lazy expiry + a periodic sweep). Every call site
+depends on the interface, mirroring the `LoginAttemptTracker` pattern above
+— a `RedisCache` implementing the same interface would let a
+multi-instance deployment share one cache with no call-site changes
+(Open/Closed: extend by adding a class, not by editing existing code).
+Applied to:
+- The `Event` row (`lib/eventConfig.ts`) — this project is single-event, so
+  it's one row that almost never changes, yet it was being re-fetched fresh
+  on every 15s dispatch tick, every trip drop-off, and several admin routes.
+  30s TTL, plus explicit `invalidateEventConfig()` after `PATCH /admin/event`
+  so an admin's config edit is visible on the very next read, not after the
+  TTL lapses.
+- `GET /admin/payments` — a heavier aggregation query (up to 300 rows joined
+  across `TripGuest`/`Guest`/`Trip`/`Driver`, plus a driver-earnings
+  leaderboard query) polled by the admin Payments tab every 8s. A 4s TTL
+  roughly halves the DB load from repeated polling with staleness well under
+  the poll interval itself.
+- Deliberately *not* cached: live trip/driver listings (`/admin/overview`,
+  `/driver/trip`, `/guest/current-trip`) — these back real-time dispatch
+  decisions and live position tracking, where a stale read is a correctness
+  problem (an admin overriding an assignment based on stale driver status),
+  not just a UX nicety. Caching there would trade a real bug for a marginal
+  perf gain.
+
+## 12. Notable trade-offs / known simplifications
 
 - **No geocoding/address search** — pickup/drop points are chosen from a
   fixed `Place` list (venue, accommodations, airport, station) seeded by

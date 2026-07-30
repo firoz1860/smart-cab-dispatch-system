@@ -1,9 +1,8 @@
 import { Router } from "express";
-import bcrypt from "bcryptjs";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
-import { prisma } from "../lib/prisma";
 import { signToken, requireAuth, setAuthCookie, clearAuthCookie } from "../middleware/auth";
+import { authService } from "../lib/authService";
 
 export const authRouter = Router();
 
@@ -12,7 +11,11 @@ const loginSchema = z.object({
   pin: z.string().min(1),
 });
 
-// Coarse per-IP throttle against scripted brute-forcing.
+// Coarse per-IP throttle against scripted brute-forcing. This is on top of
+// (not instead of) AuthService's per-phone lockout - see lib/authService.ts
+// and lib/loginAttemptTracker.ts - since a distributed attacker rotating
+// IPs could otherwise bypass a purely per-IP limit to brute-force one
+// specific account.
 const loginRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 20,
@@ -21,79 +24,33 @@ const loginRateLimiter = rateLimit({
   message: { error: "Too many login attempts from this network. Please try again later." },
 });
 
-// Finer per-phone lockout on top of the IP limiter, since a distributed
-// attacker (many IPs) could otherwise still hammer one specific account.
-const FAILED_ATTEMPT_LIMIT = 5;
-const FAILED_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
-const LOCKOUT_MS = 15 * 60 * 1000;
-const failedAttempts = new Map<string, { count: number; firstAttemptAt: number; lockedUntil?: number }>();
-
-function isLockedOut(phone: string): boolean {
-  const record = failedAttempts.get(phone);
-  if (!record?.lockedUntil) return false;
-  if (Date.now() > record.lockedUntil) {
-    failedAttempts.delete(phone);
-    return false;
-  }
-  return true;
-}
-
-function recordFailedAttempt(phone: string): void {
-  const now = Date.now();
-  const record = failedAttempts.get(phone);
-  if (!record || now - record.firstAttemptAt > FAILED_ATTEMPT_WINDOW_MS) {
-    failedAttempts.set(phone, { count: 1, firstAttemptAt: now });
-    return;
-  }
-  record.count += 1;
-  if (record.count >= FAILED_ATTEMPT_LIMIT) {
-    record.lockedUntil = now + LOCKOUT_MS;
-  }
-}
-
-function clearFailedAttempts(phone: string): void {
-  failedAttempts.delete(phone);
-}
-
-// A precomputed hash with no matching PIN, compared against on every
-// "phone not found" path so that lookup and comparison always take
-// comparable time - otherwise a missing user short-circuits before the
-// (relatively slow) bcrypt.compare a real user takes, and that timing gap
-// lets an attacker enumerate which phone numbers are actually registered.
-const DUMMY_HASH = bcrypt.hashSync("no-such-account", 10);
-
+// This handler's only job is HTTP orchestration: parse the request, ask
+// AuthService whether the credentials are valid, and translate its answer
+// into a status code + cookie + response body. All the actual security
+// logic (timing-safe comparison, lockout policy) lives in AuthService,
+// which knows nothing about Express - it's testable and reusable on its own.
 authRouter.post("/login", loginRateLimiter, async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  const { phone, pin } = parsed.data;
 
-  if (isLockedOut(phone)) {
+  const result = await authService.verifyCredentials(parsed.data);
+
+  if (result.outcome === "LOCKED") {
     return res.status(429).json({ error: "Too many failed attempts for this account. Please try again later." });
   }
-
-  const user = await prisma.user.findUnique({ where: { phone } });
-  const ok = await bcrypt.compare(pin, user?.pinHash ?? DUMMY_HASH);
-
-  if (!user || !ok) {
-    recordFailedAttempt(phone);
+  if (result.outcome === "INVALID") {
     return res.status(401).json({ error: "Invalid phone or PIN" });
   }
-  clearFailedAttempts(phone);
 
-  const token = signToken({
-    userId: user.id,
-    role: user.role as any,
-    name: user.name,
-    driverId: user.driverId ?? undefined,
-    guestId: user.guestId ?? undefined,
-  });
+  const { identity } = result;
+  const token = signToken(identity);
 
   // The JWT itself is never sent in the response body - only as an httpOnly
   // cookie, so it's inaccessible to any JavaScript running on the page
   // (including an XSS payload). The body just carries the non-secret display
   // info the frontend needs to render the right view.
   setAuthCookie(res, token);
-  res.json({ role: user.role, name: user.name, driverId: user.driverId, guestId: user.guestId });
+  res.json({ role: identity.role, name: identity.name, driverId: identity.driverId, guestId: identity.guestId });
 });
 
 authRouter.post("/logout", (_req, res) => {

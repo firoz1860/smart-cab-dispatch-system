@@ -166,4 +166,13 @@ model TripGuest {
   guest Guest @relation(fields: [guestId], references: [id])
 
   @@unique([tripId, guestId])
+  // Guest's own trip history is polled every 5s from the guest view, and the
+  // duplicate-active-ride check on every new request also filters by
+  // guestId - both were full-table scans without this.
+  @@index([guestId])
+  // The Stripe webhook looks up a TripGuest by this on every payment event -
+  // also unique in practice (one PaymentIntent belongs to exactly one
+  // booking); NULL is allowed multiple times (guests who haven't reached
+  // drop-off yet), so this doesn't block un-paid rows.
+  @@unique([stripePaymentIntentId])
 }

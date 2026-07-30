@@ -31,31 +31,45 @@ stripeWebhookRouter.post("/", async (req, res) => {
 
   if (event.type === "payment_intent.succeeded" || event.type === "payment_intent.payment_failed") {
     const intent = event.data.object as Stripe.PaymentIntent;
-    const tripGuest = await prisma.tripGuest.findFirst({ where: { stripePaymentIntentId: intent.id } });
+    const paid = event.type === "payment_intent.succeeded";
 
-    if (tripGuest) {
-      const paid = event.type === "payment_intent.succeeded";
-      await prisma.tripGuest.update({
-        where: { id: tripGuest.id },
+    // Stripe explicitly guarantees only "at least once" delivery - the same
+    // event can and does arrive more than once (retries after a timeout,
+    // network blips, etc), and two deliveries could even be in flight
+    // concurrently. Without a guard, a redelivered payment_intent.succeeded
+    // would credit the driver's earnings ledger a second time for the same
+    // fare. `updateMany`'s WHERE re-checks paymentStatus is still
+    // PENDING/UNPAID *at write time* (not just at the read above), inside
+    // the same transaction as the driver credit - so only whichever request
+    // actually wins the transition gets to run the credit, and it's atomic
+    // with that transition (a crash between the two is impossible; they
+    // commit or roll back together).
+    const applied = await prisma.$transaction(async (tx) => {
+      const tripGuest = await tx.tripGuest.findUnique({ where: { stripePaymentIntentId: intent.id } });
+      if (!tripGuest) return null;
+
+      const { count } = await tx.tripGuest.updateMany({
+        where: { id: tripGuest.id, paymentStatus: { in: ["PENDING", "UNPAID"] } },
         data: { paymentStatus: paid ? "PAID" : "FAILED", paidAt: paid ? new Date() : null },
       });
+      if (count === 0) return null; // already processed by an earlier delivery of this event - nothing to do
 
       if (paid && tripGuest.fareAmountCents) {
-        const trip = await prisma.trip.findUnique({ where: { id: tripGuest.tripId } });
+        const trip = await tx.trip.findUnique({ where: { id: tripGuest.tripId } });
         if (trip?.driverId) {
           const driverShareCents = Math.round(tripGuest.fareAmountCents * DRIVER_FARE_SHARE);
-          await prisma.driver.update({
+          await tx.driver.update({
             where: { id: trip.driverId },
             data: { totalEarningsCents: { increment: driverShareCents } },
           });
         }
       }
+      return tripGuest;
+    });
 
-      emitToGuest(tripGuest.guestId, "payment:updated", {
-        tripId: tripGuest.tripId,
-        status: paid ? "PAID" : "FAILED",
-      });
-      emitDispatchEvent("payment:updated", { tripGuestId: tripGuest.id, status: paid ? "PAID" : "FAILED" });
+    if (applied) {
+      emitToGuest(applied.guestId, "payment:updated", { tripId: applied.tripId, status: paid ? "PAID" : "FAILED" });
+      emitDispatchEvent("payment:updated", { tripGuestId: applied.id, status: paid ? "PAID" : "FAILED" });
     }
   }
 

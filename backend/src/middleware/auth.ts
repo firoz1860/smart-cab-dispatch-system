@@ -31,11 +31,22 @@ export function signToken(payload: AuthPayload): string {
   return jwt.sign(payload, process.env.JWT_SECRET as string, { expiresIn: "12h" });
 }
 
+// In local dev, the frontend (localhost:5173) and backend (localhost:4001)
+// differ only in port, which browsers treat as the *same site* (site =
+// scheme + registrable domain, port doesn't count) - so a "lax" cookie is
+// sent on every request. In a real deployment the frontend (e.g.
+// my-app.vercel.app) and backend (e.g. my-app.onrender.com) sit on
+// genuinely different registrable domains, which IS cross-site - a "lax"
+// cookie would silently stop being sent on API calls, breaking auth right
+// after a seemingly-successful login. "none" (with secure, which it
+// requires) is needed there. See DEPLOYMENT.txt.
+const isProd = process.env.NODE_ENV === "production";
+
 export function setAuthCookie(res: Response, token: string): void {
   res.cookie(AUTH_COOKIE_NAME, token, {
     httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    sameSite: isProd ? "none" : "lax",
+    secure: isProd,
     maxAge: AUTH_COOKIE_MAX_AGE_MS,
     path: "/",
   });
