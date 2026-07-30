@@ -2,6 +2,9 @@
   "name": "scds-backend",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "description": "Smart Cab Dispatch System - backend (matching engine, REST API, realtime)",
   "main": "dist/server.js",
   "scripts": {

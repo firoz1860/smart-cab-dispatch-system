@@ -57,8 +57,24 @@ Step 1.1 — Create the Web Service
        Branch:             main
        Root Directory:     backend
        Runtime:            Node
-       Build Command:      npm install && npm run prisma:generate && npm run build
+       Build Command:      npm ci && npm run prisma:generate && npm run build
        Start Command:      npx prisma migrate deploy && npm run start
+
+  Use "npm ci", not "npm install", for the build command. "npm ci" installs
+  the *exact* versions recorded in package-lock.json (which must be
+  committed to git - it is not gitignored in this project); "npm install"
+  is allowed to resolve a newer version of anything whose package.json
+  range permits it, even one that didn't exist yet when you last built
+  locally. That mismatch is exactly what caused a real failure during this
+  project's own first deploy: locally-installed TypeScript 5.9.3 built
+  fine, but Render's "npm install" resolved a later TypeScript release that
+  hard-removed the (already-deprecated) `moduleResolution: "node"` value in
+  backend/tsconfig.json ("error TS5108: Option 'moduleResolution=node10'
+  has been removed"). Fixed by moving to the modern, non-deprecated
+  `"module": "node16"` / `"moduleResolution": "node16"` pairing (TypeScript
+  requires these two to match for the Node16/NodeNext family - setting only
+  one produces a different error, TS5110) - but "npm ci" is what stops the
+  next unrelated dependency bump from causing a surprise like this again.
        Instance Type:      Free is fine to try it out (see the "Free tier
                             limitations" note in Part 4 before using it for
                             a real event)
@@ -247,6 +263,15 @@ like).
 
 PART 4 — GOTCHAS AND LIMITATIONS SPECIFIC TO THIS DEPLOYMENT
 ------------------------------------------------------------------
+  - Build fails with "error TS5108: Option 'moduleResolution=node10' has
+    been removed" (or a similar TypeScript compiler-option error) — this
+    means Render's build resolved a different (newer) TypeScript version
+    than whatever you last built with locally. Make sure the build command
+    is "npm ci" (Part 1, Step 1.1), not "npm install" - see the note right
+    below that step for exactly why, and confirm backend/package-lock.json
+    is actually committed to git (`git ls-files backend/package-lock.json`
+    should print the path; if it prints nothing, it's not tracked, and
+    "npm ci" will fail outright because it requires that file).
   - Free-tier Render instances spin down after ~15 minutes of no traffic
     and take ~30-60s to wake back up on the next request. For a real
     event, use a paid "always-on" instance type — a cold start mid-event
