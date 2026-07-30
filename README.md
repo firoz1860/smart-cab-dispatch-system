@@ -1,30 +1,100 @@
-# Smart Cab / Vehicle Dispatch System
+# 🚕 Smart Cab / Vehicle Dispatch System
 
-Automated driver-guest dispatch for a single private group event
-(conference/offsite) — a guest mobile app, an Admin/Operations + Driver
-portal, and a backend matching engine that assigns drivers to guests
-automatically. Neither guests nor drivers ever browse or pick a match; the
-engine does it, and admin only approves/declines ad-hoc requests or manually
-overrides when needed.
+> Automated driver-guest dispatch for a single private group event (conference/offsite) — one guest app, one Admin/Operations + Driver portal, and a backend matching engine that assigns drivers to guests automatically. Neither guests nor drivers ever browse or pick a match; the engine does it, and admin only approves/declines ad-hoc requests or manually overrides when needed.
 
-See [`docs/DESIGN.md`](docs/DESIGN.md) for the matching algorithm, trade-offs,
-and data model in depth. This file is the practical "how do I run it" guide.
-See [`WALKTHROUGH.txt`](WALKTHROUGH.txt) for a full live run-through (fresh
-admin/driver/guest accounts, a trip through its whole lifecycle, a fare, and
-RBAC/security checks — all against the real running app, not simulated) and
-[`DEPLOYMENT.txt`](DEPLOYMENT.txt) for a from-scratch, step-by-step guide to
-deploying the backend on Render and the frontend on Vercel.
+![Node.js](https://img.shields.io/badge/Node.js-20+-339933?logo=node.js&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![Express](https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white)
+![Prisma](https://img.shields.io/badge/Prisma-5.x-2D3748?logo=prisma&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-embedded-003B57?logo=sqlite&logoColor=white)
+![Socket.IO](https://img.shields.io/badge/Socket.IO-4.x-010101?logo=socket.io&logoColor=white)
+![Stripe](https://img.shields.io/badge/Stripe-test--mode-635BFF?logo=stripe&logoColor=white)
 
-![alt text](image.png)
-![alt text](image-1.png)
-![alt text](image-2.png)
-![alt text](image-3.png)
-![alt text](image-4.png)
-![alt text](image-5.png)
-![alt text](image-6.png)
-![alt text](image-7.png)
-![alt text](image-8.png)
+📖 See [`docs/DESIGN.md`](docs/DESIGN.md) for the matching algorithm, trade-offs, and data model in depth — this file is the practical "how do I run it" guide.
+🧪 See [`WALKTHROUGH.txt`](WALKTHROUGH.txt) for a full live run-through (fresh admin/driver/guest accounts, a trip through its whole lifecycle, a fare, and RBAC/security checks — all against the real running app, not simulated).
+🚀 See [`DEPLOYMENT.txt`](DEPLOYMENT.txt) for a from-scratch, step-by-step guide to deploying the backend on Render and the frontend on Vercel.
 
+---
+
+## Table of contents
+
+- [Screenshots](#screenshots)
+- [What's in it](#whats-in-it)
+- [Structure](#structure)
+- [Prerequisites](#prerequisites)
+- [1. Backend](#1-backend)
+- [2. The unified app](#2-the-unified-app)
+- [How it works](#how-it-works)
+- [Maps / ETA provider](#maps--eta-provider)
+- [Payments](#payments)
+- [Security](#security)
+- [Architecture and scalability](#architecture-and-scalability)
+- [Environment files](#environment-files)
+- [Known limitations](#known-limitations)
+
+---
+
+## Screenshots
+
+### Admin / Operations
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="image.png" width="100%" alt="Admin dashboard — live map and fleet summary"><br/>
+      <sub><b>Overview</b> — live map + fleet/trip status at a glance</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="image-1.png" width="100%" alt="Admin Drivers panel — onboarding form and driver roster"><br/>
+      <sub><b>Drivers</b> — onboarding form + searchable, paginated roster</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="image-2.png" width="100%" alt="Admin Guests panel — registration form and guest roster"><br/>
+      <sub><b>Guests</b> — registration form + searchable, paginated roster</sub>
+    </td>
+    <td align="center">
+      <img src="image-3.png" width="100%" alt="Admin Requests panel — approve or decline on-demand ride requests"><br/>
+      <sub><b>Requests</b> — approve/decline on-demand ride requests</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="image-4.png" width="100%" alt="Admin Trips panel — scheduling a trip and viewing all active trips"><br/>
+      <sub><b>Trips</b> — schedule a trip + every active trip, with manual override</sub>
+    </td>
+    <td align="center">
+      <img src="image-5.png" width="100%" alt="Admin Payments panel — revenue totals, driver earnings, and fare ledger"><br/>
+      <sub><b>Payments</b> — revenue totals, driver earnings, fare ledger</sub>
+    </td>
+  </tr>
+</table>
+
+### Driver
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="image-6.png" width="100%" alt="Driver view — offline, waiting to go online"><br/>
+      <sub><b>Offline</b> — before going online, no trip assigned yet</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="image-7.png" width="100%" alt="Driver view — assigned trip with stop details and a live route map"><br/>
+      <sub><b>Active trip</b> — stop details, accept/reject, and a live route map</sub>
+    </td>
+  </tr>
+</table>
+
+### Guest
+
+<p align="center">
+  <img src="image-8.png" width="720" alt="Guest view — live ride tracking, upcoming trips, and new ride requests"><br/>
+  <sub><b>Guest dashboard</b> — live ride tracking, upcoming trips, and ride requests</sub>
+</p>
+
+---
 
 ## What's in it
 
@@ -45,7 +115,7 @@ deploying the backend on Render and the frontend on Vercel.
   (test mode), with a driver earnings ledger and an admin revenue view. Fully
   optional — see [Payments](#payments) below.
 - **Push notifications**, a 3D sign-in intro, dark mode, and responsive
-  layouts across mobile/tablet/desktop in both frontends.
+  layouts across mobile/tablet/desktop.
 
 ## Structure
 
@@ -61,12 +131,12 @@ in at the same URL with their own phone/PIN, and land on the view scoped to
 their role. `guest-app`'s functionality now lives inside `admin-portal` too,
 so you no longer need to run two frontends to exercise all three roles.
 
-**`guest-app` no longer works standalone.** The auth hardening below
-(httpOnly session cookie) means `/auth/login` no longer returns a raw token
-in its response body at all — `guest-app`'s own `AuthContext` still expects
-one and was not updated, since the unified `admin-portal` is the
-supported path going forward. It's kept in the repo for reference, not as a
-working alternative deployment.
+> **`guest-app` no longer works standalone.** The auth hardening below
+> (httpOnly session cookie) means `/auth/login` no longer returns a raw token
+> in its response body at all — `guest-app`'s own `AuthContext` still expects
+> one and was not updated, since the unified `admin-portal` is the
+> supported path going forward. It's kept in the repo for reference, not as a
+> working alternative deployment.
 
 ## Prerequisites
 
@@ -110,7 +180,9 @@ Run the Hungarian-solver unit tests + a live assignment sanity report:
 npm run test
 ```
 
-## 2. The app (Admin/Operations, Driver, and Guest — one sign-in)
+## 2. The unified app
+
+Admin/Operations, Driver, and Guest — one sign-in, one running instance.
 
 ```bash
 cd admin-portal
@@ -139,10 +211,10 @@ and `/guest/*` backend route independently re-checks the session's role and
 a Driver-role session cannot fetch the admin dashboard's data even by calling
 the API directly.
 
-## How it works — a worked example
+## How it works
 
-Say a guest, Sneha, needs a ride from her hotel to the venue mid-afternoon,
-outside her originally scheduled pickup.
+A worked example: say a guest, Sneha, needs a ride from her hotel to the
+venue mid-afternoon, outside her originally scheduled pickup.
 
 1. **Guest requests a ride.** Sneha logs in as a guest, hits "New request,"
    picks "Hilltop Residency" as pickup and "Grand Convene Center" as drop
@@ -195,20 +267,19 @@ data instead, set `GOOGLE_MAPS_API_KEY` in `backend/.env` and restart the
 backend; it falls back to the built-in model automatically if the API call
 fails, and caches repeated queries for the same pair within a 5-minute window
 either way, to avoid excessive paid API usage from frequent driver GPS pings.
-Both frontends render maps with Leaflet + OpenStreetMap tiles, which need no
-API key.
+The app renders maps with Leaflet + OpenStreetMap tiles, which need no API key.
 
 ## Payments
 
 Guests are charged a fare (base fare + per-km, computed from pickup→drop
 distance) via Stripe when they're dropped off. This is **off by default** —
 without `STRIPE_SECRET_KEY` set, fares still compute and show everywhere
-(guest app, admin Payments tab, driver earnings), they just can't be charged.
+(guest view, admin Payments tab, driver earnings), they just can't be charged.
 
 To enable it, get a free Stripe **test-mode** key (no business verification
 required) at https://dashboard.stripe.com/test/apikeys and set:
 - `backend/.env` — `STRIPE_SECRET_KEY` (starts `sk_test_...`)
-- `guest-app/.env` — `VITE_STRIPE_PUBLISHABLE_KEY` (starts `pk_test_...`)
+- `admin-portal/.env` — `VITE_STRIPE_PUBLISHABLE_KEY` (starts `pk_test_...`)
 
 Payment confirmation is webhook-driven (never trust a client-side "success"
 alone): point a webhook at `POST /webhooks/stripe` and set
@@ -219,12 +290,12 @@ dev, the [Stripe CLI](https://stripe.com/docs/stripe-cli) makes this easy:
 stripe listen --forward-to localhost:4001/webhooks/stripe
 ```
 
-**Scope boundary:** driver "earnings" (visible in the admin Payments tab and
-the driver's own view) are an internal ledger (80% of each paid fare), not a
-real bank transfer. Actually paying out to drivers would need Stripe Connect
-with per-driver onboarding — a separate, larger integration than a private
-event's fleet needs by default, so it's intentionally not built here. See
-`docs/DESIGN.md` §9 for the full reasoning.
+> **Scope boundary:** driver "earnings" (visible in the admin Payments tab and
+> the driver's own view) are an internal ledger (80% of each paid fare), not a
+> real bank transfer. Actually paying out to drivers would need Stripe Connect
+> with per-driver onboarding — a separate, larger integration than a private
+> event's fleet needs by default, so it's intentionally not built here. See
+> `docs/DESIGN.md` §9 for the full reasoning.
 
 ## Security
 
@@ -258,7 +329,7 @@ Sign-in is hardened beyond a bare JWT-in-localStorage setup:
   DB-unique, and a `User`'s `driverId`/`guestId` foreign keys are themselves
   unique, so one phone number can never map to more than one role or record.
 
-## Architecture & scalability
+## Architecture and scalability
 
 - **Indexing** — every field actually used as a query predicate on a
   frequent path is indexed (`Driver.status`/`Trip.status` for the 15s
@@ -297,7 +368,9 @@ Each app has its own `.env` (already populated with working local defaults):
 | `admin-portal/.env` | `VITE_API_URL`, `VITE_STRIPE_PUBLISHABLE_KEY` (optional) |
 | `guest-app/.env` | Only relevant if you still run the standalone guest-app; same variables as before |
 
-## Known limitations (see docs/DESIGN.md §12 for the full list)
+## Known limitations
+
+*(see [`docs/DESIGN.md`](docs/DESIGN.md) §12 for the full list)*
 
 - Driver payouts are a ledger, not a real transfer (see [Payments](#payments)).
 - No real push-notification service worker — browser Notification API only,
