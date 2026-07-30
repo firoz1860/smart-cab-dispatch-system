@@ -322,7 +322,7 @@ function DriversPanel({
   );
 
   return (
-    <div className="grid-2">
+    <div className="grid-form-table">
       <div className="card">
         <h3>Onboard a driver</h3>
         <form onSubmit={submit} className="stacked-form">
@@ -454,7 +454,7 @@ function GuestsPanel({ guests, places, onChanged }: { guests: Guest[]; places: P
   );
 
   return (
-    <div className="grid-2">
+    <div className="grid-form-table">
       <div className="card">
         <h3>Register a guest</h3>
         <form onSubmit={submit} className="stacked-form">
@@ -752,7 +752,7 @@ function TripsPanel({
   const pageTrips = filteredTrips.slice((currentPage - 1) * TRIPS_PAGE_SIZE, currentPage * TRIPS_PAGE_SIZE);
 
   return (
-    <div className="grid-2">
+    <div className="grid-form-table">
       <div className="card">
         <h3>Schedule a trip</h3>
         <form onSubmit={scheduleTrip} className="stacked-form">
@@ -955,7 +955,7 @@ function PaymentsPanel() {
   const pagePayments = filtered.slice((currentPage - 1) * PAYMENTS_PAGE_SIZE, currentPage * PAYMENTS_PAGE_SIZE);
 
   return (
-    <div className="grid-2">
+    <div className="grid-form-table">
       <div className="card">
         <h3>Revenue</h3>
         {error && <div className="error-banner">{error}</div>}

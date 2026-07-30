@@ -266,6 +266,26 @@
   }
 }
 
+/* Same idea as .grid-2, but for the (input form) + (data table) panels
+   (Drivers, Guests, Trips, Payments): an even 1fr/1fr split left the table
+   side with barely 500px on a typical 1024-1440px laptop window - not
+   enough for a table like Trips' 7 columns, so it fell back to a
+   horizontal scrollbar even on a laptop, not just mobile. The form side
+   only ever needs enough width for a handful of labeled inputs, so it gets
+   a fixed, modest width and the table gets the rest. */
+.grid-form-table {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (min-width: 1024px) {
+  .grid-form-table {
+    grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  }
+}
+
 .search-input {
   display: block;
   width: 100%;
@@ -312,13 +332,17 @@
   white-space: normal;
 }
 
-/* Below 600px, tables stop being tables (which forced a horizontal scroll
-   bar to reach columns off the edge of a phone screen) and become a stack
-   of labeled cards instead - one per row, each td shown as a "Label: value"
-   line via its data-label attribute. No JS branching needed: it's the same
-   markup, just re-laid-out by CSS, so this applies to every .data-table
-   (Drivers, Guests, Requests, Trips, Payments) automatically. */
-@media (max-width: 599px) {
+/* Below 900px (phones and most tablets, not just phones), tables stop
+   being tables - which forced a horizontal scroll bar to reach columns off
+   the edge of the screen - and become a stack of labeled cards instead:
+   one per row, each td shown as a "Label: value" line via its data-label
+   attribute. No JS branching needed: it's the same markup, just re-laid-out
+   by CSS, so this applies to every .data-table (Drivers, Guests, Requests,
+   Trips, Payments) automatically. Laptop/desktop (>=1024px) additionally
+   gets help from .grid-form-table giving the table column most of the
+   width instead of an even 50/50 split, so tables fit without scrolling
+   there too. */
+@media (max-width: 899px) {
   .table-scroll {
     overflow-x: visible;
   }
