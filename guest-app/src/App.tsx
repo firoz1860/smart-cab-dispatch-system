@@ -5,7 +5,10 @@ import { Dashboard } from "./pages/Dashboard";
 import "./App.css";
 
 function Home() {
-  const { session } = useAuth();
+  const { session, loading } = useAuth();
+  // Session lives in an httpOnly cookie; while /auth/me is checking it, don't
+  // flash a redirect to /login for someone who's actually signed in.
+  if (loading) return null;
   if (!session) return <Navigate to="/login" replace />;
   return <Dashboard />;
 }

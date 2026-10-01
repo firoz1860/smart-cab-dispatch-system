@@ -24,21 +24,22 @@ guestRouter.get("/me", async (req, res) => {
 /** All of this guest's trips across the event (scheduled + on-demand),
  * newest first - lets the guest see upcoming pickups and past rides. */
 guestRouter.get("/trips", async (req, res) => {
+  // Filter out CANCELLED trips and sort newest-first in the database (backed by
+  // the TripGuest.guestId index) rather than pulling every row and doing it in
+  // JS - smaller result set and no post-processing on the hot, polled path.
   const tripGuests = await prisma.tripGuest.findMany({
-    where: { guestId: guestId(req) },
+    where: { guestId: guestId(req), trip: { status: { not: "CANCELLED" } } },
     include: { trip: { include: { driver: true } } },
+    orderBy: { trip: { requestedAt: "desc" } },
   });
-  const trips = tripGuests
-    .map((tg) => ({
-      ...tg.trip,
-      myStopOrder: tg.stopOrder,
-      myBoarded: tg.boarded,
-      myDroppedOff: tg.droppedOff,
-      myFareAmountCents: tg.fareAmountCents,
-      myPaymentStatus: tg.paymentStatus,
-    }))
-    .filter((t) => t.status !== "CANCELLED")
-    .sort((a, b) => b.requestedAt.getTime() - a.requestedAt.getTime());
+  const trips = tripGuests.map((tg) => ({
+    ...tg.trip,
+    myStopOrder: tg.stopOrder,
+    myBoarded: tg.boarded,
+    myDroppedOff: tg.droppedOff,
+    myFareAmountCents: tg.fareAmountCents,
+    myPaymentStatus: tg.paymentStatus,
+  }));
   res.json(trips);
 });
 
