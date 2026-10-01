@@ -1,12 +1,14 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, lazy, Suspense } from "react";
 import { api, ApiError } from "../api/client";
 import { getSocket } from "../api/socket";
 import { useAuth } from "../auth/AuthContext";
-import { MapView } from "../components/MapView";
 import { formatDuration, formatCents } from "../lib/format";
 import { useLiveCountdown } from "../lib/useLiveCountdown";
 import { requestNotificationPermission, notify } from "../lib/pushNotify";
 import type { Driver, Trip } from "../types";
+
+// Leaflet loads as its own chunk, kept out of the initial bundle.
+const MapView = lazy(() => import("../components/MapView").then((m) => ({ default: m.MapView })));
 
 interface Stop {
   phase: "pickup" | "drop";
@@ -47,15 +49,19 @@ export function DriverView() {
   useEffect(() => {
     refresh();
     requestNotificationPermission();
-    const interval = setInterval(refresh, 5000);
+    // The socket pushes assignment/updates live; this is a light fallback and
+    // cold-start/reconnect safety net, not the primary update path.
+    const interval = setInterval(refresh, 20000);
     if (session) {
       const socket = getSocket();
+      socket.on("connect", refresh);
       socket.on("trip:assigned", () => {
         notify("New trip assigned", "Open the app to review pickup details.");
         refresh();
       });
       return () => {
         clearInterval(interval);
+        socket.off("connect", refresh);
         socket.off("trip:assigned");
       };
     }
@@ -251,14 +257,16 @@ export function DriverView() {
           <div className="card">
             <h3>Route</h3>
             <div className="map-frame">
-              <MapView
-                center={[trip.pickupLat, trip.pickupLng]}
-                markers={[
-                  { id: "pickup", lat: trip.pickupLat, lng: trip.pickupLng, label: trip.pickupLabel, variant: "place" },
-                  { id: "drop", lat: trip.dropLat, lng: trip.dropLng, label: trip.dropLabel, variant: "place" },
-                  ...(me ? [{ id: "me", lat: me.currentLat, lng: me.currentLng, label: "You", variant: "driver" as const }] : []),
-                ]}
-              />
+              <Suspense fallback={<div className="map-skeleton" />}>
+                <MapView
+                  center={[trip.pickupLat, trip.pickupLng]}
+                  markers={[
+                    { id: "pickup", lat: trip.pickupLat, lng: trip.pickupLng, label: trip.pickupLabel, variant: "place" },
+                    { id: "drop", lat: trip.dropLat, lng: trip.dropLng, label: trip.dropLabel, variant: "place" },
+                    ...(me ? [{ id: "me", lat: me.currentLat, lng: me.currentLng, label: "You", variant: "driver" as const }] : []),
+                  ]}
+                />
+              </Suspense>
             </div>
           </div>
         </div>

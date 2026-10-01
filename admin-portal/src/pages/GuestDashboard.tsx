@@ -1,13 +1,16 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, lazy, Suspense } from "react";
 import { api, ApiError } from "../api/client";
 import { getSocket } from "../api/socket";
 import { useAuth } from "../auth/AuthContext";
-import { MapView } from "../components/MapView";
 import { formatDuration, formatCents } from "../lib/format";
 import { useLiveCountdown } from "../lib/useLiveCountdown";
 import { requestNotificationPermission, notify } from "../lib/pushNotify";
-import { PaymentForm } from "../components/PaymentForm";
 import type { Guest, Trip, Place } from "../types";
+
+// Heavy, rarely-needed deps as their own chunks: Leaflet (only with an active
+// ride) and Stripe (only when paying) stay out of the initial bundle.
+const MapView = lazy(() => import("../components/MapView").then((m) => ({ default: m.MapView })));
+const PaymentForm = lazy(() => import("../components/PaymentForm").then((m) => ({ default: m.PaymentForm })));
 
 const TRIP_TYPE_LABELS: Record<string, string> = {
   ARRIVAL: "Arrival",
@@ -112,9 +115,12 @@ export function GuestDashboard() {
   useEffect(() => {
     refresh();
     requestNotificationPermission();
-    const interval = setInterval(refresh, 5000);
+    // Live updates arrive over the socket; this is a light fallback and
+    // cold-start/reconnect safety-net poll, not the primary update path.
+    const interval = setInterval(refresh, 20000);
     if (session) {
       const socket = getSocket();
+      socket.on("connect", refresh);
       socket.on("trip:matched", () => {
         setNotification("You've been matched with a driver! Check your ride details below.");
         notify("Driver matched", "You've been matched with a driver - check your ride details.");
@@ -148,6 +154,7 @@ export function GuestDashboard() {
       );
       return () => {
         clearInterval(interval);
+        socket.off("connect", refresh);
         socket.off("trip:matched");
         socket.off("trip:boarded");
         socket.off("trip:dropped");
@@ -220,16 +227,18 @@ export function GuestDashboard() {
               )}
               <RideTimeline status={currentTrip.trip.status} />
               <div className="map-frame">
-                <MapView
-                  center={[currentTrip.trip.pickupLat, currentTrip.trip.pickupLng]}
-                  markers={[
-                    { id: "pickup", lat: currentTrip.trip.pickupLat, lng: currentTrip.trip.pickupLng, label: currentTrip.trip.pickupLabel, variant: "place" },
-                    { id: "drop", lat: currentTrip.trip.dropLat, lng: currentTrip.trip.dropLng, label: currentTrip.trip.dropLabel, variant: "place" },
-                    ...(currentTrip.driver
-                      ? [{ id: "driver", lat: currentTrip.driver.currentLat, lng: currentTrip.driver.currentLng, label: "Your driver", variant: "driver" as const }]
-                      : []),
-                  ]}
-                />
+                <Suspense fallback={<div className="map-skeleton" />}>
+                  <MapView
+                    center={[currentTrip.trip.pickupLat, currentTrip.trip.pickupLng]}
+                    markers={[
+                      { id: "pickup", lat: currentTrip.trip.pickupLat, lng: currentTrip.trip.pickupLng, label: currentTrip.trip.pickupLabel, variant: "place" },
+                      { id: "drop", lat: currentTrip.trip.dropLat, lng: currentTrip.trip.dropLng, label: currentTrip.trip.dropLabel, variant: "place" },
+                      ...(currentTrip.driver
+                        ? [{ id: "driver", lat: currentTrip.driver.currentLat, lng: currentTrip.driver.currentLng, label: "Your driver", variant: "driver" as const }]
+                        : []),
+                    ]}
+                  />
+                </Suspense>
               </div>
             </div>
           )}
@@ -307,14 +316,16 @@ export function GuestDashboard() {
                       )}
                       {payingTripId === t.id && (
                         <div className="trip-payment-form">
-                          <PaymentForm
-                            tripId={t.id}
-                            onPaid={() => {
-                              setPayingTripId(null);
-                              setNotification("Payment received - thank you!");
-                              refresh();
-                            }}
-                          />
+                          <Suspense fallback={<p className="muted">Loading payment…</p>}>
+                            <PaymentForm
+                              tripId={t.id}
+                              onPaid={() => {
+                                setPayingTripId(null);
+                                setNotification("Payment received - thank you!");
+                                refresh();
+                              }}
+                            />
+                          </Suspense>
                           <button className="secondary" onClick={() => setPayingTripId(null)}>
                             Cancel
                           </button>

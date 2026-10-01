@@ -9,9 +9,19 @@ import "./App.css";
 
 function RoleGate() {
   const { session, loading } = useAuth();
-  // Session lives in an httpOnly cookie; while /auth/me is checking it,
-  // don't flash a redirect to /login for someone who's actually signed in.
-  if (loading) return null;
+  // Session lives in an httpOnly cookie; while /auth/me is checking it, don't
+  // flash a redirect to /login for someone who's actually signed in. Show a
+  // branded loader rather than a blank screen - on a Render free-tier cold
+  // start this check can take 30-60s, and a blank page reads as "broken".
+  if (loading) {
+    return (
+      <div className="app-loading">
+        <span className="brand-mark" aria-hidden="true">🚕</span>
+        <span className="spinner" aria-hidden="true" />
+        <p>Connecting to dispatch…</p>
+      </div>
+    );
+  }
   if (!session) return <Navigate to="/login" replace />;
   if (session.role === "ADMIN") return <AdminDashboard />;
   if (session.role === "DRIVER") return <DriverView />;

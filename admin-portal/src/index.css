@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
-
 :root {
   /* "Dispatch board" identity: cool control-room neutrals, deep navy ink,
      a single taxi-amber signal accent, and a transit-style status palette. */
@@ -83,6 +81,27 @@
 body {
   margin: 0;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Responsiveness guards: never let a stray wide element create a horizontal
+   scrollbar, and keep media from overflowing its container on small screens. */
+html,
+body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+img,
+svg,
+video,
+canvas {
+  max-width: 100%;
+}
+
+/* ...but Leaflet sizes its own tile <img>s absolutely; a max-width clamp
+   would break the map, so opt those back out. */
+.leaflet-container img {
+  max-width: none;
 }
 
 h1, h2, h3, h4 {

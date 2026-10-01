@@ -1,8 +1,13 @@
-import { useEffect, useState, useCallback, useRef, Fragment } from "react";
+import { useEffect, useState, useCallback, useRef, Fragment, lazy, Suspense } from "react";
 import { api, ApiError } from "../api/client";
 import { getSocket } from "../api/socket";
 import { useAuth } from "../auth/AuthContext";
-import { MapView, type MapMarker } from "../components/MapView";
+import type { MapMarker } from "../components/MapView";
+
+// Leaflet is ~150KB+; load it as its own chunk so it isn't in the initial
+// bundle that gates first paint - the dashboard shell renders immediately and
+// the map streams in behind a skeleton.
+const MapView = lazy(() => import("../components/MapView").then((m) => ({ default: m.MapView })));
 import { useToast } from "../components/Toast";
 import { formatDuration, formatCents } from "../lib/format";
 import { useLiveCountdown } from "../lib/useLiveCountdown";
@@ -73,10 +78,15 @@ export function AdminDashboard() {
 
   useEffect(() => {
     refresh();
-    const interval = setInterval(refresh, 6000);
+    // Socket events below push every change live; this is just a light fallback
+    // poll (and a safety net), not the primary update path - so it can be slow.
+    const interval = setInterval(refresh, 20000);
     if (session) {
       const socket = getSocket();
       const onChange = () => refresh();
+      // Re-sync on every (re)connect - e.g. once the Render backend wakes from a
+      // cold start, or after a network blip - so the board is never left stale.
+      socket.on("connect", onChange);
       socket.on("trip:assigned", onChange);
       socket.on("trip:accepted", onChange);
       socket.on("trip:rejected", onChange);
@@ -99,6 +109,7 @@ export function AdminDashboard() {
       socket.on("driver:location", onDriverLocation);
       return () => {
         clearInterval(interval);
+        socket.off("connect", onChange);
         socket.off("trip:assigned", onChange);
         socket.off("trip:accepted", onChange);
         socket.off("trip:rejected", onChange);
@@ -198,7 +209,9 @@ export function AdminDashboard() {
             <div className="card">
               <h3>Live map — {event?.name}</h3>
               <div className="map-frame">
-                <MapView markers={[...driverMarkers, ...placeMarkers]} center={venueCenter} />
+                <Suspense fallback={<div className="map-skeleton" />}>
+                  <MapView markers={[...driverMarkers, ...placeMarkers]} center={venueCenter} />
+                </Suspense>
               </div>
             </div>
             <div className="card">
@@ -972,7 +985,7 @@ function PaymentsPanel() {
 
   useEffect(() => {
     refresh();
-    const interval = setInterval(refresh, 8000);
+    const interval = setInterval(refresh, 15000);
     return () => clearInterval(interval);
   }, [refresh]);
 
