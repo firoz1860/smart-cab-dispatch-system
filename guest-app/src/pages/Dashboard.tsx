@@ -50,47 +50,66 @@ export function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [payingTripId, setPayingTripId] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  // Profile and the list of pickup/drop places don't change during a session,
+  // so they're fetched once on mount - not on every refresh. This keeps the
+  // steady-state polling to just the two endpoints that actually change.
+  const loadProfile = useCallback(async () => {
     try {
-      const [g, t, c, p] = await Promise.all([
+      const [g, p] = await Promise.all([
         api.get<Guest>("/guest/me"),
-        api.get<Trip[]>("/guest/trips"),
-        api.get<{ trip: Trip; driver: Trip["driver"]; nextStop: any } | null>("/guest/current-trip"),
         api.get<Place[]>("/guest/places"),
       ]);
       setGuest(g);
-      setTrips(t);
-      setCurrentTrip(c);
       setPlaces(p);
     } catch (err) {
       if (err instanceof ApiError) setError(err.message);
     }
   }, []);
 
+  // The live-changing data: this guest's trips and their active ride. Pushed by
+  // the socket on every state change below; the interval is only a safety net.
+  const refreshTrips = useCallback(async () => {
+    try {
+      const [t, c] = await Promise.all([
+        api.get<Trip[]>("/guest/trips"),
+        api.get<{ trip: Trip; driver: Trip["driver"]; nextStop: any } | null>("/guest/current-trip"),
+      ]);
+      setTrips(t);
+      setCurrentTrip(c);
+    } catch (err) {
+      if (err instanceof ApiError) setError(err.message);
+    }
+  }, []);
+
   useEffect(() => {
-    refresh();
+    loadProfile();
+    refreshTrips();
     requestNotificationPermission();
-    const interval = setInterval(refresh, 5000);
+    // Live updates arrive via the socket events below, which already fire on
+    // every relevant trip/payment transition. This interval is a fallback for a
+    // missed event or a dropped socket - hence 20s, not the old 5s hammer that
+    // ran four requests every five seconds on top of the socket.
+    const interval = setInterval(refreshTrips, 20000);
     if (session) {
-      const socket = getSocket(session.token);
+      const socket = getSocket();
       socket.on("trip:matched", () => {
         setNotification("You've been matched with a driver! Check your ride details below.");
         notify("Driver matched", "You've been matched with a driver - check your ride details.");
-        refresh();
+        refreshTrips();
       });
-      socket.on("trip:boarded", () => refresh());
+      socket.on("trip:boarded", () => refreshTrips());
       socket.on("trip:dropped", () => {
         setNotification("You've arrived at your destination.");
         notify("Trip complete", "You've arrived at your destination.");
-        refresh();
+        refreshTrips();
       });
       socket.on("trip:driver-arrived-pickup", () => {
         setNotification("Your driver has arrived! Please head to the pickup point.");
         notify("Driver has arrived", "Please head to the pickup point.");
-        refresh();
+        refreshTrips();
       });
-      socket.on("trip:driver-arrived-drop", () => refresh());
-      socket.on("payment:updated", () => refresh());
+      socket.on("trip:driver-arrived-drop", () => refreshTrips());
+      socket.on("payment:updated", () => refreshTrips());
       socket.on(
         "driver:location",
         (data: { driverId: string; lat: number; lng: number; etaSeconds: number | null }) => {
@@ -116,7 +135,7 @@ export function Dashboard() {
       };
     }
     return () => clearInterval(interval);
-  }, [refresh, session]);
+  }, [loadProfile, refreshTrips, session]);
 
   const liveEtaSeconds = useLiveCountdown(currentTrip?.trip.etaSeconds);
 
@@ -208,7 +227,7 @@ export function Dashboard() {
                 onCancel={() => setShowRequestForm(false)}
                 onSubmitted={() => {
                   setShowRequestForm(false);
-                  refresh();
+                  refreshTrips();
                 }}
               />
             )}
@@ -261,7 +280,7 @@ export function Dashboard() {
                             onPaid={() => {
                               setPayingTripId(null);
                               setNotification("Payment received - thank you!");
-                              refresh();
+                              refreshTrips();
                             }}
                           />
                           <button className="secondary" onClick={() => setPayingTripId(null)}>

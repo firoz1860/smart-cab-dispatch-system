@@ -22,6 +22,16 @@ export type VerifyResult =
   | { outcome: "LOCKED" }
   | { outcome: "INVALID" };
 
+export interface Registration {
+  name: string;
+  phone: string;
+  pin: string;
+}
+
+export type RegisterResult =
+  | { outcome: "OK"; identity: AuthenticatedIdentity }
+  | { outcome: "PHONE_TAKEN" };
+
 // A precomputed hash with no matching PIN, compared against on every
 // "phone not found" path so lookup and comparison always take comparable
 // time - otherwise a missing user short-circuits before the (relatively
@@ -66,6 +76,56 @@ export class AuthService {
         guestId: user.guestId ?? undefined,
       },
     };
+  }
+
+  /**
+   * Self-service guest registration. Creates a Guest profile plus its linked
+   * GUEST-role User (the auth record) in a single transaction so a half-made
+   * account can never exist. The PIN is bcrypt-hashed exactly like seeded
+   * accounts - the plaintext is never stored. Returns an identity ready to be
+   * signed into a session, mirroring verifyCredentials' "OK" shape so the
+   * route can issue a cookie and auto-sign-in the new guest.
+   *
+   * Driver and admin accounts are intentionally NOT registerable here: those
+   * remain provisioned by organizers (seed/admin tooling), so the public
+   * signup surface can only ever mint a least-privilege GUEST.
+   */
+  async registerGuest({ name, phone, pin }: Registration): Promise<RegisterResult> {
+    // Phone is unique on BOTH User and Guest. Pre-checking gives a clean 409
+    // instead of a 500 in the common case; the transaction's catch below still
+    // guards the race where two signups for the same phone arrive at once.
+    const [existingUser, existingGuest] = await Promise.all([
+      prisma.user.findUnique({ where: { phone } }),
+      prisma.guest.findUnique({ where: { phone } }),
+    ]);
+    if (existingUser || existingGuest) return { outcome: "PHONE_TAKEN" };
+
+    const pinHash = await bcrypt.hash(pin, 10);
+
+    try {
+      const identity = await prisma.$transaction(async (tx) => {
+        const guest = await tx.guest.create({
+          data: { name, phone, partySize: 1, luggageCount: 1 },
+        });
+        const user = await tx.user.create({
+          data: { role: "GUEST", phone, name, pinHash, guestId: guest.id },
+        });
+        return {
+          userId: user.id,
+          role: "GUEST" as Role,
+          name: user.name,
+          guestId: guest.id,
+        } satisfies AuthenticatedIdentity;
+      });
+      return { outcome: "OK", identity };
+    } catch (err) {
+      // P2002 = unique-constraint violation: another request registered this
+      // phone between our pre-check and insert. Treat as "already taken".
+      if (err && typeof err === "object" && (err as { code?: string }).code === "P2002") {
+        return { outcome: "PHONE_TAKEN" };
+      }
+      throw err;
+    }
   }
 }
 
