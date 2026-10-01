@@ -39,6 +39,48 @@ function GuestStatusLabel({ status }: { status: string }) {
   return <span className="status-pill">{labels[status] ?? status}</span>;
 }
 
+// A guest's ride moves through a fixed sequence of milestones. Showing it as a
+// timeline (what's done, what's happening now, what's next) is far more
+// reassuring than a single status word - the traveler can see exactly where
+// they are in the journey.
+const RIDE_STEPS = [
+  "Requested",
+  "Finding your driver",
+  "Driver assigned",
+  "Driver on the way",
+  "Driver arrived",
+  "On your way",
+  "Arrived at destination",
+];
+
+function rideStepIndex(status: string): number {
+  switch (status) {
+    case "PENDING_APPROVAL": return 0;
+    case "QUEUED":
+    case "UNASSIGNABLE": return 1;
+    case "ASSIGNED": return 2;
+    case "EN_ROUTE_PICKUP": return 3;
+    case "ARRIVED_PICKUP": return 4;
+    case "IN_PROGRESS": return 5;
+    case "ARRIVED_DROP": return 6;
+    case "COMPLETED": return 7;
+    default: return 0;
+  }
+}
+
+function RideTimeline({ status }: { status: string }) {
+  const idx = rideStepIndex(status);
+  return (
+    <ul className="timeline">
+      {RIDE_STEPS.map((label, i) => (
+        <li key={label} className={i < idx ? "done" : i === idx ? "current" : ""}>
+          {label}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function GuestDashboard() {
   const { session, logout } = useAuth();
   const [guest, setGuest] = useState<Guest | null>(null);
@@ -138,6 +180,7 @@ export function GuestDashboard() {
           </div>
         </div>
         <div className="user-chip">
+          <span className="user-avatar">{session?.name?.[0]?.toUpperCase() ?? "G"}</span>
           <span className="user-name">{session?.name}</span>
           <button className="logout-btn" onClick={logout}>Log out</button>
         </div>
@@ -175,16 +218,19 @@ export function GuestDashboard() {
                   )}
                 </div>
               )}
-              <MapView
-                center={[currentTrip.trip.pickupLat, currentTrip.trip.pickupLng]}
-                markers={[
-                  { id: "pickup", lat: currentTrip.trip.pickupLat, lng: currentTrip.trip.pickupLng, label: currentTrip.trip.pickupLabel, variant: "place" },
-                  { id: "drop", lat: currentTrip.trip.dropLat, lng: currentTrip.trip.dropLng, label: currentTrip.trip.dropLabel, variant: "place" },
-                  ...(currentTrip.driver
-                    ? [{ id: "driver", lat: currentTrip.driver.currentLat, lng: currentTrip.driver.currentLng, label: "Your driver", variant: "driver" as const }]
-                    : []),
-                ]}
-              />
+              <RideTimeline status={currentTrip.trip.status} />
+              <div className="map-frame">
+                <MapView
+                  center={[currentTrip.trip.pickupLat, currentTrip.trip.pickupLng]}
+                  markers={[
+                    { id: "pickup", lat: currentTrip.trip.pickupLat, lng: currentTrip.trip.pickupLng, label: currentTrip.trip.pickupLabel, variant: "place" },
+                    { id: "drop", lat: currentTrip.trip.dropLat, lng: currentTrip.trip.dropLng, label: currentTrip.trip.dropLabel, variant: "place" },
+                    ...(currentTrip.driver
+                      ? [{ id: "driver", lat: currentTrip.driver.currentLat, lng: currentTrip.driver.currentLng, label: "Your driver", variant: "driver" as const }]
+                      : []),
+                  ]}
+                />
+              </div>
             </div>
           )}
         </div>
@@ -216,7 +262,12 @@ export function GuestDashboard() {
 
           <div className="card">
             <h3>Upcoming</h3>
-            {upcoming.length === 0 && <p className="muted">No upcoming trips.</p>}
+            {upcoming.length === 0 && (
+              <div className="empty-state">
+                <span className="empty-emoji" aria-hidden="true">🗓️</span>
+                <p className="muted">No upcoming trips. Request a ride above whenever you're ready to go.</p>
+              </div>
+            )}
             <ul className="trip-list">
               {upcoming.map((t) => (
                 <li key={t.id}>
