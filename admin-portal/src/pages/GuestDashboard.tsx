@@ -11,6 +11,7 @@ import type { Guest, Trip, Place } from "../types";
 // ride) and Stripe (only when paying) stay out of the initial bundle.
 const MapView = lazy(() => import("../components/MapView").then((m) => ({ default: m.MapView })));
 const PaymentForm = lazy(() => import("../components/PaymentForm").then((m) => ({ default: m.PaymentForm })));
+const QrPayment = lazy(() => import("../components/QrPayment").then((m) => ({ default: m.QrPayment })));
 
 const TRIP_TYPE_LABELS: Record<string, string> = {
   ARRIVAL: "Arrival",
@@ -94,6 +95,7 @@ export function GuestDashboard() {
   const [showRequestForm, setShowRequestForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [payingTripId, setPayingTripId] = useState<string | null>(null);
+  const [qrTripId, setQrTripId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -310,7 +312,12 @@ export function GuestDashboard() {
                             {t.myPaymentStatus === "FAILED" && " · Payment failed"}
                           </span>
                           {owesPayment && payingTripId !== t.id && (
-                            <button onClick={() => setPayingTripId(t.id)}>Pay now</button>
+                            <div className="button-row">
+                              <button onClick={() => { setPayingTripId(t.id); setQrTripId(null); }}>Pay now</button>
+                              <button className="secondary" onClick={() => { setQrTripId(t.id); setPayingTripId(null); }}>
+                                Pay via QR
+                              </button>
+                            </div>
                           )}
                         </div>
                       )}
@@ -339,6 +346,26 @@ export function GuestDashboard() {
           )}
         </div>
       </div>
+
+      {qrTripId && (() => {
+        const qt = past.find((t) => t.id === qrTripId);
+        if (!qt || qt.myFareAmountCents == null) return null;
+        return (
+          <Suspense fallback={null}>
+            <QrPayment
+              tripId={qt.id}
+              guestName={guest?.name ?? session?.name ?? "Guest"}
+              amountCents={qt.myFareAmountCents}
+              onCancel={() => setQrTripId(null)}
+              onPaid={() => {
+                setQrTripId(null);
+                setNotification("Payment received - thank you!");
+                refresh();
+              }}
+            />
+          </Suspense>
+        );
+      })()}
     </div>
   );
 }
