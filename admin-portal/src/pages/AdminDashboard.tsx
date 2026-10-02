@@ -1008,7 +1008,7 @@ function PaymentsPanel() {
   const pagePayments = filtered.slice((currentPage - 1) * PAYMENTS_PAGE_SIZE, currentPage * PAYMENTS_PAGE_SIZE);
 
   return (
-    <div className="grid-form-table">
+    <div className="grid-2">
       <div className="card">
         <h3>Revenue</h3>
         {error && <div className="error-banner">{error}</div>}
@@ -1022,21 +1022,23 @@ function PaymentsPanel() {
           each driver to complete Stripe Connect onboarding (a separate, larger integration).
         </p>
         <h4>Driver earnings</h4>
-        <table className="data-table">
-          <thead><tr><th>Driver</th><th>Vehicle</th><th>Earned</th></tr></thead>
-          <tbody>
-            {(data?.driverEarnings ?? []).length === 0 && (
-              <tr><td colSpan={3} className="muted">No completed/paid trips yet.</td></tr>
-            )}
-            {(data?.driverEarnings ?? []).map((d) => (
-              <tr key={d.id}>
-                <td data-label="Driver">{d.name}</td>
-                <td data-label="Vehicle">{d.vehicleNumber}</td>
-                <td data-label="Earned">{formatCents(d.totalEarningsCents)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead><tr><th>Driver</th><th>Vehicle</th><th>Earned</th></tr></thead>
+            <tbody>
+              {(data?.driverEarnings ?? []).length === 0 && (
+                <tr><td colSpan={3} className="muted">No completed/paid trips yet.</td></tr>
+              )}
+              {(data?.driverEarnings ?? []).map((d) => (
+                <tr key={d.id}>
+                  <td data-label="Driver">{d.name}</td>
+                  <td data-label="Vehicle">{d.vehicleNumber}</td>
+                  <td data-label="Earned">{formatCents(d.totalEarningsCents)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
       <div className="card">
         <h3>Fares ({filtered.length}{q ? ` of ${payments.length}` : ""})</h3>

@@ -1372,3 +1372,155 @@ button:disabled {
 @media (prefers-reduced-motion: reduce) {
   .app-loading .spinner { animation: none; }
 }
+
+/* ============================================================
+   Modal + QR / UPI payment
+   ============================================================ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(8, 12, 20, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.modal {
+  width: 100%;
+  max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: 20px;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+}
+
+.qr-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.qr-head h3 {
+  margin: 0;
+}
+
+.icon-btn {
+  height: 32px;
+  width: 32px;
+  min-width: 0;
+  padding: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text-h);
+  border-color: var(--text);
+}
+
+/* QR must sit on a light background to stay scannable, even in dark mode. */
+.qr-code-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  min-height: 240px;
+}
+
+.qr-code-box img {
+  width: 100%;
+  max-width: 240px;
+  height: auto;
+  display: block;
+}
+
+.qr-skeleton {
+  width: 240px;
+  height: 240px;
+  max-width: 100%;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.qr-hint {
+  text-align: center;
+  margin: 10px 0 14px;
+}
+
+.qr-details {
+  margin: 0 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.qr-details > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.qr-details dt {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.qr-details dd {
+  margin: 0;
+  color: var(--text-h);
+  font-weight: 600;
+  font-size: 14px;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.qr-amount {
+  font-family: var(--font-display);
+  font-size: 18px;
+}
+
+.qr-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.qr-actions button {
+  width: 100%;
+}
+
+.qr-success {
+  text-align: center;
+  padding: 26px 8px;
+}
+
+.qr-check {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 12px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  font-weight: 700;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+}
