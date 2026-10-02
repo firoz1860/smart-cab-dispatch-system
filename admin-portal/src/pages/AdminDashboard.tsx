@@ -1,8 +1,13 @@
-import { useEffect, useState, useCallback, useRef, Fragment } from "react";
+import { useEffect, useState, useCallback, useRef, Fragment, lazy, Suspense } from "react";
 import { api, ApiError } from "../api/client";
 import { getSocket } from "../api/socket";
 import { useAuth } from "../auth/AuthContext";
-import { MapView, type MapMarker } from "../components/MapView";
+import type { MapMarker } from "../components/MapView";
+
+// Leaflet is ~150KB+; load it as its own chunk so it isn't in the initial
+// bundle that gates first paint - the dashboard shell renders immediately and
+// the map streams in behind a skeleton.
+const MapView = lazy(() => import("../components/MapView").then((m) => ({ default: m.MapView })));
 import { useToast } from "../components/Toast";
 import { formatDuration, formatCents } from "../lib/format";
 import { useLiveCountdown } from "../lib/useLiveCountdown";
@@ -11,28 +16,31 @@ import type { Driver, Guest, Place, Trip, Event } from "../types";
 type Tab = "overview" | "drivers" | "guests" | "requests" | "trips" | "payments";
 
 function StatusBadge({ status }: { status: string }) {
+  // Transit signal palette. Shades are chosen dark enough for white badge text
+  // to stay legible (WCAG AA): go (green), warn (amber), active (blue),
+  // alert (red), idle (grey).
   const colorMap: Record<string, string> = {
-    AVAILABLE: "#1a9e5c",
-    OFFLINE: "#888",
-    ASSIGNED: "#c9820a",
-    EN_ROUTE_PICKUP: "#c9820a",
-    ARRIVED_PICKUP: "#2563eb",
-    ARRIVED_DROP: "#2563eb",
-    ON_TRIP: "#2563eb",
-    ON_BREAK: "#7c3aed",
-    QUEUED: "#c9820a",
-    PENDING_APPROVAL: "#b91c1c",
-    UNASSIGNABLE: "#b91c1c",
-    COMPLETED: "#1a9e5c",
-    CANCELLED: "#888",
-    PAID: "#1a9e5c",
-    PENDING: "#c9820a",
-    UNPAID: "#888",
-    FAILED: "#b91c1c",
-    REFUNDED: "#7c3aed",
+    AVAILABLE: "#117a53",
+    OFFLINE: "#5f6b7a",
+    ASSIGNED: "#8a5a12",
+    EN_ROUTE_PICKUP: "#8a5a12",
+    ARRIVED_PICKUP: "#2457d6",
+    ARRIVED_DROP: "#2457d6",
+    ON_TRIP: "#2457d6",
+    ON_BREAK: "#8a5a12",
+    QUEUED: "#8a5a12",
+    PENDING_APPROVAL: "#b5392b",
+    UNASSIGNABLE: "#b5392b",
+    COMPLETED: "#117a53",
+    CANCELLED: "#5f6b7a",
+    PAID: "#117a53",
+    PENDING: "#8a5a12",
+    UNPAID: "#5f6b7a",
+    FAILED: "#b5392b",
+    REFUNDED: "#2457d6",
   };
   return (
-    <span className="badge" style={{ background: colorMap[status] ?? "#555" }}>
+    <span className="badge" style={{ background: colorMap[status] ?? "#5f6b7a" }}>
       {status.replace(/_/g, " ")}
     </span>
   );
@@ -70,10 +78,15 @@ export function AdminDashboard() {
 
   useEffect(() => {
     refresh();
-    const interval = setInterval(refresh, 6000);
+    // Socket events below push every change live; this is just a light fallback
+    // poll (and a safety net), not the primary update path - so it can be slow.
+    const interval = setInterval(refresh, 20000);
     if (session) {
       const socket = getSocket();
       const onChange = () => refresh();
+      // Re-sync on every (re)connect - e.g. once the Render backend wakes from a
+      // cold start, or after a network blip - so the board is never left stale.
+      socket.on("connect", onChange);
       socket.on("trip:assigned", onChange);
       socket.on("trip:accepted", onChange);
       socket.on("trip:rejected", onChange);
@@ -96,6 +109,7 @@ export function AdminDashboard() {
       socket.on("driver:location", onDriverLocation);
       return () => {
         clearInterval(interval);
+        socket.off("connect", onChange);
         socket.off("trip:assigned", onChange);
         socket.off("trip:accepted", onChange);
         socket.off("trip:rejected", onChange);
@@ -125,6 +139,14 @@ export function AdminDashboard() {
     ? [drivers[0].currentLat, drivers[0].currentLng]
     : [0, 0];
 
+  // At-a-glance operational KPIs for the overview board, derived from data
+  // already loaded (no extra request).
+  const ACTIVE_TRIP_STATUSES = ["ASSIGNED", "EN_ROUTE_PICKUP", "ARRIVED_PICKUP", "IN_PROGRESS", "ARRIVED_DROP"];
+  const fleetOnline = drivers.filter((d) => d.status !== "OFFLINE").length;
+  const onTripNow = trips.filter((t) => ACTIVE_TRIP_STATUSES.includes(t.status)).length;
+  const queuedCount = trips.filter((t) => t.status === "QUEUED").length;
+  const alertCount = trips.filter((t) => t.status === "UNASSIGNABLE").length;
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -136,6 +158,7 @@ export function AdminDashboard() {
           </div>
         </div>
         <div className="user-chip">
+          <span className="user-avatar">{session?.name?.[0]?.toUpperCase() ?? "A"}</span>
           <span className="user-name">{session?.name}</span>
           <button className="logout-btn" onClick={logout}>Log out</button>
         </div>
@@ -157,16 +180,46 @@ export function AdminDashboard() {
       {error && <div className="error-banner">{error}</div>}
 
       {tab === "overview" && (
-        <div className="grid-2">
-          <div className="card">
-            <h3>Live map — {event?.name}</h3>
-            <MapView markers={[...driverMarkers, ...placeMarkers]} center={venueCenter} />
+        <>
+          <div className="kpi-row">
+            <div className="kpi" style={{ "--kpi": "var(--sig-go)" } as React.CSSProperties}>
+              <div className="kpi-value">
+                {fleetOnline}
+                <span style={{ fontSize: "16px", color: "var(--text)" }}> / {drivers.length}</span>
+              </div>
+              <div className="kpi-label">Fleet online</div>
+            </div>
+            <div className="kpi" style={{ "--kpi": "var(--sig-active)" } as React.CSSProperties}>
+              <div className="kpi-value">{onTripNow}</div>
+              <div className="kpi-label">On a trip now</div>
+            </div>
+            <div className="kpi" style={{ "--kpi": "var(--sig-warn)" } as React.CSSProperties}>
+              <div className="kpi-value">{queuedCount}</div>
+              <div className="kpi-label">Queued for dispatch</div>
+            </div>
+            <div
+              className="kpi"
+              style={{ "--kpi": alertCount > 0 ? "var(--sig-alert)" : "var(--sig-idle)" } as React.CSSProperties}
+            >
+              <div className="kpi-value">{alertCount}</div>
+              <div className="kpi-label">Need attention</div>
+            </div>
           </div>
-          <div className="card">
-            <h3>Fleet summary</h3>
-            <SummaryTable drivers={drivers} trips={trips} />
+          <div className="grid-2">
+            <div className="card">
+              <h3>Live map — {event?.name}</h3>
+              <div className="map-frame">
+                <Suspense fallback={<div className="map-skeleton" />}>
+                  <MapView markers={[...driverMarkers, ...placeMarkers]} center={venueCenter} />
+                </Suspense>
+              </div>
+            </div>
+            <div className="card">
+              <h3>Fleet summary</h3>
+              <SummaryTable drivers={drivers} trips={trips} />
+            </div>
           </div>
-        </div>
+        </>
       )}
 
       {tab === "drivers" && <DriversPanel drivers={drivers} defaultLat={venueCenter[0]} defaultLng={venueCenter[1]} onChanged={refresh} />}
@@ -932,7 +985,7 @@ function PaymentsPanel() {
 
   useEffect(() => {
     refresh();
-    const interval = setInterval(refresh, 8000);
+    const interval = setInterval(refresh, 15000);
     return () => clearInterval(interval);
   }, [refresh]);
 

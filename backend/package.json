@@ -13,6 +13,7 @@
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
+    "prisma:deploy": "prisma migrate deploy",
     "seed": "ts-node --transpile-only src/prisma/seed.ts",
     "test": "ts-node --transpile-only src/lib/testMatching.ts"
   },

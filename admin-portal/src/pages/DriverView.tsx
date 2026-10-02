@@ -1,12 +1,14 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, lazy, Suspense } from "react";
 import { api, ApiError } from "../api/client";
 import { getSocket } from "../api/socket";
 import { useAuth } from "../auth/AuthContext";
-import { MapView } from "../components/MapView";
 import { formatDuration, formatCents } from "../lib/format";
 import { useLiveCountdown } from "../lib/useLiveCountdown";
 import { requestNotificationPermission, notify } from "../lib/pushNotify";
 import type { Driver, Trip } from "../types";
+
+// Leaflet loads as its own chunk, kept out of the initial bundle.
+const MapView = lazy(() => import("../components/MapView").then((m) => ({ default: m.MapView })));
 
 interface Stop {
   phase: "pickup" | "drop";
@@ -47,15 +49,19 @@ export function DriverView() {
   useEffect(() => {
     refresh();
     requestNotificationPermission();
-    const interval = setInterval(refresh, 5000);
+    // The socket pushes assignment/updates live; this is a light fallback and
+    // cold-start/reconnect safety net, not the primary update path.
+    const interval = setInterval(refresh, 20000);
     if (session) {
       const socket = getSocket();
+      socket.on("connect", refresh);
       socket.on("trip:assigned", () => {
         notify("New trip assigned", "Open the app to review pickup details.");
         refresh();
       });
       return () => {
         clearInterval(interval);
+        socket.off("connect", refresh);
         socket.off("trip:assigned");
       };
     }
@@ -134,6 +140,16 @@ export function DriverView() {
   }
 
   const guestNames = trip?.guests.map((g) => g.guest?.name).filter(Boolean).join(", ");
+  const shiftDotClass =
+    me?.status === "AVAILABLE"
+      ? "go"
+      : me?.status === "ON_BREAK"
+        ? "rest"
+        : !me || me.status === "OFFLINE"
+          ? ""
+          : "busy";
+  const stops = tripData?.stops ?? [];
+  const currentStopIdx = stops.findIndex((s) => !s.done);
 
   return (
     <div className="app-shell">
@@ -146,6 +162,7 @@ export function DriverView() {
           </div>
         </div>
         <div className="user-chip">
+          <span className="user-avatar">{session?.name?.[0]?.toUpperCase() ?? "D"}</span>
           <span className="user-name">{session?.name}</span>
           <button className="logout-btn" onClick={logout}>Log out</button>
         </div>
@@ -154,24 +171,40 @@ export function DriverView() {
       {error && <div className="error-banner">{error}</div>}
 
       <div className="card">
-        <h3>Your status: {me?.status}</h3>
-        <p className="muted">Total earnings: <strong>{formatCents(me?.totalEarningsCents ?? 0)}</strong></p>
-        <div className="button-row">
-          {me?.status === "OFFLINE" ? (
-            <button onClick={goOnline}>Go online</button>
-          ) : (
-            <button className="danger" onClick={goOffline} disabled={!!trip}>
-              Go offline
-            </button>
-          )}
-          {sharing && <span className="muted">📍 Sharing live location</span>}
+        <div className="driver-hero">
+          <div className="hero-meta">
+            <div className="shift-status">
+              <span className={`status-dot ${shiftDotClass}`} />
+              {me?.status ? me.status.replace(/_/g, " ") : "—"}
+            </div>
+            <p className="muted">Shift status</p>
+          </div>
+          <div className="hero-meta">
+            <div className="earn-figure">{formatCents(me?.totalEarningsCents ?? 0)}</div>
+            <p className="muted">Total earnings</p>
+          </div>
+          <div className="button-row">
+            {me?.status === "OFFLINE" ? (
+              <button onClick={goOnline}>Go online</button>
+            ) : (
+              <button className="danger" onClick={goOffline} disabled={!!trip}>
+                Go offline
+              </button>
+            )}
+            {sharing && <span className="live-pill">Sharing location</span>}
+          </div>
         </div>
-        {me?.status === "ON_BREAK" && <p className="muted">On mandatory rest break until {me.freeAt ? new Date(me.freeAt).toLocaleTimeString() : "—"}.</p>}
+        {me?.status === "ON_BREAK" && (
+          <p className="muted">On mandatory rest break until {me.freeAt ? new Date(me.freeAt).toLocaleTimeString() : "—"}.</p>
+        )}
       </div>
 
       {!trip && (
         <div className="card">
-          <p className="muted">No trip assigned right now. You'll be notified the moment the dispatch engine matches you with a guest.</p>
+          <div className="empty-state">
+            <span className="empty-emoji" aria-hidden="true">🛰️</span>
+            <p className="muted">No trip assigned right now. You'll be notified the moment the dispatch engine matches you with a guest.</p>
+          </div>
         </div>
       )}
 
@@ -185,17 +218,18 @@ export function DriverView() {
             {liveEta != null && <p><strong>ETA:</strong> ~{formatDuration(liveEta)}</p>}
             {next && (
               <div className="next-stop">
-                <span className="badge" style={{ background: next.phase === "pickup" ? "#c9820a" : "#2563eb" }}>
-                  {next.phase === "pickup" ? "Next: Pick up" : "Next: Drop off"}
+                <span className="next-chip" style={{ background: next.phase === "pickup" ? "#8a5a12" : "#2457d6" }}>
+                  {next.phase === "pickup" ? "Next · Pick up" : "Next · Drop off"}
                 </span>
                 <p>{next.label}</p>
               </div>
             )}
             <h4>All stops</h4>
-            <ul className="stop-list">
-              {tripData?.stops.map((s, i) => (
-                <li key={i} className={s.done ? "done" : ""}>
-                  {s.phase === "pickup" ? "Pick up" : "Drop"} — {s.label} {s.done ? "✓" : ""}
+            <ul className="timeline">
+              {stops.map((s, i) => (
+                <li key={i} className={s.done ? "done" : i === currentStopIdx ? "current" : ""}>
+                  <span className="step-sub">{s.phase === "pickup" ? "Pick up" : "Drop off"}</span>
+                  {s.label}
                 </li>
               ))}
             </ul>
@@ -207,29 +241,33 @@ export function DriverView() {
                 </>
               )}
               {trip.status === "EN_ROUTE_PICKUP" && (
-                <button onClick={() => arrive(trip.id)}>Mark arrived at pickup</button>
+                <button className="action-primary" onClick={() => arrive(trip.id)}>Mark arrived at pickup</button>
               )}
               {trip.status === "ARRIVED_PICKUP" && (
-                <button onClick={() => advance(trip.id)}>Confirm guest boarded</button>
+                <button className="action-primary" onClick={() => advance(trip.id)}>Confirm guest boarded</button>
               )}
               {trip.status === "IN_PROGRESS" && (
-                <button onClick={() => arrive(trip.id)}>Mark arrived at drop-off</button>
+                <button className="action-primary" onClick={() => arrive(trip.id)}>Mark arrived at drop-off</button>
               )}
               {trip.status === "ARRIVED_DROP" && (
-                <button onClick={() => advance(trip.id)}>Confirm guest dropped</button>
+                <button className="action-primary" onClick={() => advance(trip.id)}>Confirm guest dropped</button>
               )}
             </div>
           </div>
           <div className="card">
             <h3>Route</h3>
-            <MapView
-              center={[trip.pickupLat, trip.pickupLng]}
-              markers={[
-                { id: "pickup", lat: trip.pickupLat, lng: trip.pickupLng, label: trip.pickupLabel, variant: "place" },
-                { id: "drop", lat: trip.dropLat, lng: trip.dropLng, label: trip.dropLabel, variant: "place" },
-                ...(me ? [{ id: "me", lat: me.currentLat, lng: me.currentLng, label: "You", variant: "driver" as const }] : []),
-              ]}
-            />
+            <div className="map-frame">
+              <Suspense fallback={<div className="map-skeleton" />}>
+                <MapView
+                  center={[trip.pickupLat, trip.pickupLng]}
+                  markers={[
+                    { id: "pickup", lat: trip.pickupLat, lng: trip.pickupLng, label: trip.pickupLabel, variant: "place" },
+                    { id: "drop", lat: trip.dropLat, lng: trip.dropLng, label: trip.dropLabel, variant: "place" },
+                    ...(me ? [{ id: "me", lat: me.currentLat, lng: me.currentLng, label: "You", variant: "driver" as const }] : []),
+                  ]}
+                />
+              </Suspense>
+            </div>
           </div>
         </div>
       )}

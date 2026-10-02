@@ -1,23 +1,42 @@
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --panel-bg: #faf9fc;
-  --border: #e5e4e7;
-  --accent: #7c3aed;
-  --accent-hover: #6d28d9;
-  --danger: #b91c1c;
-  --danger-hover: #991b1b;
-  --success: #1a9e5c;
+  /* "Dispatch board" identity: cool control-room neutrals, deep navy ink,
+     a single taxi-amber signal accent, and a transit-style status palette. */
+  --ink: #0e1726;
+  --bg: #eef1f5;
+  --surface: #ffffff;
+  --surface-2: #f6f8fb;
+  --panel-bg: var(--surface);
+  --text: #5a6473;
+  --text-h: #111826;
+  --border: #dde3ec;
 
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px rgba(16, 12, 24, 0.05);
-  --shadow-md: 0 6px 20px rgba(16, 12, 24, 0.08);
+  --accent: #f4a62a;
+  --accent-hover: #e5940f;
+  --accent-strong: #a66a00;
+  --on-accent: #10151f;
+
+  --danger: #d14334;
+  --danger-hover: #b5392b;
+  --success: #138a5e;
+
+  /* Transit signal palette: available / assigned / in-trip / alert / idle */
+  --sig-go: #138a5e;
+  --sig-warn: #b6791f;
+  --sig-active: #2563eb;
+  --sig-alert: #d14334;
+  --sig-idle: #7c8698;
+  --link: #2563eb;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --shadow-sm: 0 1px 2px rgba(14, 23, 38, 0.06);
+  --shadow-md: 0 10px 30px rgba(14, 23, 38, 0.12);
   --control-height: 40px;
 
-  font: 15px/145% system-ui, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+
+  font: 15px/1.5 "Inter", system-ui, "Segoe UI", Roboto, sans-serif;
   color-scheme: light dark;
   color: var(--text-h);
   background: var(--bg);
@@ -25,18 +44,33 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --panel-bg: #1c1d24;
-    --border: #2e303a;
-    --accent: #a78bfa;
-    --accent-hover: #8b5cf6;
-    --danger: #ef4444;
-    --danger-hover: #dc2626;
-    --success: #34d399;
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
-    --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.45);
+    --ink: #0a0f18;
+    --bg: #0b0f17;
+    --surface: #141a26;
+    --surface-2: #1b2230;
+    --panel-bg: var(--surface);
+    --text: #9aa5b5;
+    --text-h: #eef2f8;
+    --border: #273041;
+
+    --accent: #f6b23f;
+    --accent-hover: #ffc155;
+    --accent-strong: #f6b23f;
+    --on-accent: #10151f;
+
+    --danger: #f05545;
+    --danger-hover: #d8463a;
+    --success: #35c48b;
+
+    --sig-go: #35c48b;
+    --sig-warn: #e0a23f;
+    --sig-active: #5b8cff;
+    --sig-alert: #f05545;
+    --sig-idle: #8792a4;
+    --link: #7aa2ff;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 12px 34px rgba(0, 0, 0, 0.5);
   }
 }
 
@@ -49,13 +83,36 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Responsiveness guards: never let a stray wide element create a horizontal
+   scrollbar, and keep media from overflowing its container on small screens. */
+html,
+body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+img,
+svg,
+video,
+canvas {
+  max-width: 100%;
+}
+
+/* ...but Leaflet sizes its own tile <img>s absolutely; a max-width clamp
+   would break the map, so opt those back out. */
+.leaflet-container img {
+  max-width: none;
+}
+
 h1, h2, h3, h4 {
   color: var(--text-h);
   margin: 0 0 8px;
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
 }
 
 a {
-  color: var(--accent);
+  color: var(--link);
 }
 
 button:focus-visible,
@@ -68,7 +125,7 @@ a:focus-visible {
 
 ::selection {
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
 }
 
 .vehicle-marker {
@@ -132,6 +189,7 @@ a:focus-visible {
   animation: signinBrandFade 3s ease forwards;
   z-index: 1;
   text-align: center;
+  color: var(--on-accent);
 }
 
 .signin-intro-cab {

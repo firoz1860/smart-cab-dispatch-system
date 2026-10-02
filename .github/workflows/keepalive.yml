@@ -1,0 +1,39 @@
+name: Keep backend warm
+
+# Render free-tier web services spin down after ~15 min of no traffic and then
+# take ~30-60s to cold-start on the next request - the main cause of the slow
+# first load on the deployed link. This pings the backend's /health endpoint on
+# a schedule so the instance stays awake.
+#
+# Setup: add a repository VARIABLE named BACKEND_URL
+#   (Settings -> Secrets and variables -> Actions -> Variables tab)
+#   set to your Render backend origin, e.g. https://scds-backend.onrender.com
+# If it's unset, the job no-ops instead of failing.
+#
+# Note: GitHub's cron is best-effort (can run late) and schedules pause after
+# ~60 days of no repo activity. For a live event, a paid always-on Render
+# instance is still the robust fix (see DEPLOYMENT.txt).
+
+on:
+  schedule:
+    - cron: "*/12 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend /health
+        run: |
+          if [ -z "${{ vars.BACKEND_URL }}" ]; then
+            echo "BACKEND_URL repo variable is not set - skipping keep-alive."
+            echo "Set it to your Render backend URL to enable this."
+            exit 0
+          fi
+          url="${{ vars.BACKEND_URL }}/health"
+          echo "Pinging $url"
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 90 "$url" || true)
+          echo "Health check returned HTTP $code"
+          if [ "$code" != "200" ]; then
+            echo "::warning::Backend health check did not return 200 (got $code). It may have been waking from a cold start."
+          fi
