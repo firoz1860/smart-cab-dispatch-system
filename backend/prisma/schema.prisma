@@ -3,14 +3,15 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-// NOTE: SQLite has no native enum support in Prisma, so enums below are modeled
-// as `String` columns. The allowed value sets are enforced at the application
-// layer via TS union types in src/lib/constants.ts (Role, PlaceType, DriverStatus,
-// TripType, TripOrigin, TripStatus).
+// NOTE: enums below are modeled as `String` columns (originally for SQLite,
+// which has no native enum support; kept as-is on PostgreSQL to avoid changing
+// schema design/behavior). The allowed value sets are enforced at the
+// application layer via TS union types in src/lib/constants.ts (Role, PlaceType,
+// DriverStatus, TripType, TripOrigin, TripStatus).
 
 model Event {
   id        String   @id @default(cuid())
