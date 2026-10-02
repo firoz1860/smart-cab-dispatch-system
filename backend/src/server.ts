@@ -8,6 +8,7 @@ import { adminRouter } from "./routes/admin";
 import { driverRouter } from "./routes/driver";
 import { guestRouter } from "./routes/guest";
 import { stripeWebhookRouter } from "./routes/stripeWebhook";
+import { razorpayWebhookRouter } from "./routes/razorpayWebhook";
 import { initSocket } from "./realtime/socket";
 import { startDispatchLoop } from "./engine/matchingEngine";
 import { isAllowedOrigin } from "./lib/corsOrigins";
@@ -32,6 +33,9 @@ app.use(cookieParser());
 // must be mounted with express.raw() BEFORE the global express.json() below
 // - once express.json() has consumed the body, the raw bytes are gone.
 app.use("/webhooks/stripe", express.raw({ type: "application/json" }), stripeWebhookRouter);
+// Razorpay (UPI QR) webhook also needs the raw body for HMAC signature
+// verification, so it too is mounted before the global JSON parser.
+app.use("/webhooks/razorpay", express.raw({ type: "application/json" }), razorpayWebhookRouter);
 
 app.use(express.json());
 

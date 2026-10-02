@@ -1524,3 +1524,15 @@ button:disabled {
   color: var(--success);
   background: color-mix(in srgb, var(--success) 18%, transparent);
 }
+
+.status-pill.status-pending {
+  background: var(--sig-warn);
+  color: #fff;
+}
+
+.qr-foot {
+  margin: 12px 0 0;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.45;
+}
